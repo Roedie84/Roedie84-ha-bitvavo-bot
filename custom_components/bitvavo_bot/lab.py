@@ -117,7 +117,9 @@ def select_params(
     out: dict[str, str | None] = {}
     for market, hour_bars in data.items():
         bars = closed_bars(hour_bars, TIMEFRAMES[timeframe])
-        if len(bars) < 300:
+        # te jonge markt: minder historie dan één volledig venster (train + test)
+        min_span = (cfg.train_days + cfg.test_days) * DAY_MS
+        if len(bars) < 300 or bars[-1][0] - bars[0][0] < min_span:
             out[market] = None
             continue
         end = bars[-1][0]

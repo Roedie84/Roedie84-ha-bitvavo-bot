@@ -10,6 +10,7 @@ from custom_components.bitvavo_bot.lab import (
     p_value_positive,
     resample,
     run_lab,
+    select_params,
     walk_forward,
     weekly_means,
 )
@@ -119,3 +120,11 @@ def test_bull_market_alone_is_not_an_edge():
     rep = run_lab(data)
     assert rep["buy_hold_pct"] > 30
     assert rep["oordeel"] == "geen edge"
+
+
+def test_select_params_skips_young_markets():
+    old = make_bars(24 * 300, seed=5, vol=0.004, cycle=0.012)
+    young = old[-24 * 60:]  # zelfde koersen, maar pas 60 dagen historie
+    chosen = select_params({"OLD-EUR": old, "NEW-EUR": young}, "grid", "1h")
+    assert chosen["NEW-EUR"] is None
+    assert chosen["OLD-EUR"] is not None

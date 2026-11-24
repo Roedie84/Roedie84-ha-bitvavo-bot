@@ -135,3 +135,33 @@ async def test_summary_values_open_position():
     s = e.summary(prices)
     assert s["open_posities"] == 1 and s["resultaat"] > 2.0
     assert s["posities"][0]["markt"] == "A-EUR"
+
+
+async def test_grid_round_robin_spreads_the_cap_over_markets():
+    e, prices = make({"A-EUR": 100.0, "B-EUR": 100.0, "C-EUR": 100.0})
+    lim = Limits(max_per_buy=25.0, max_total=100.0, max_day_loss=50.0)
+    grid3 = {**GRID, "levels": 3}
+    items = [(m, flat(4), grid3) for m in ("A-EUR", "B-EUR", "C-EUR")]
+    await e.on_grid_bars(items, lim, True)
+    placed = sorted((o["market"], o["level"]) for o in e.book["orders"])
+    # 4 orders passen: eerst niveau 1 voor alle drie, dan pas niveau 2
+    assert placed == [("A-EUR", 1), ("A-EUR", 2), ("B-EUR", 1), ("C-EUR", 1)]
+    assert set(e.book["last_bar"]) == {"A-EUR", "B-EUR", "C-EUR"}
+    await e.on_grid_bars(items, lim, True)  # zelfde bar: niets dubbel
+    assert len(e.book["orders"]) == 4
+    # een markt zonder parameters plaatst niets, maar blokkeert de rest niet
+    e2, _ = make({"A-EUR": 100.0, "B-EUR": 100.0})
+    await e2.on_grid_bars([("A-EUR", flat(4), None), ("B-EUR", flat(4), GRID)], lim, True)
+    assert {o["market"] for o in e2.book["orders"]} == {"B-EUR"}
+
+
+async def test_equity_is_recorded_hourly_and_thinned():
+    e, prices = make()
+    e.record_equity(0, prices)
+    e.record_equity(60_000, prices)  # zelfde uur: geen nieuw punt
+    e.record_equity(3_600_000, prices)
+    assert [p[0] for p in e.book["equity"]] == [0, 3_600_000]
+    for i in range(2, 3200):
+        e.record_equity(i * 3_600_000, prices)
+    assert len(e.book["equity"]) < 3000 and e.book["equity"][-1][0] == 3199 * 3_600_000
+    assert len(e.summary(prices)["verloop"]) == 720

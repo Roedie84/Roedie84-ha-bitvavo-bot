@@ -118,6 +118,7 @@ class Engine:
                 for p in b["positions"]
             ],
             "laatste_trades": b["trades"][-10:][::-1],
+            "verloop": b.get("equity", [])[-720:],
         }
 
     # ------------------------------------------------------------- dagbewaking
@@ -258,40 +259,92 @@ class Engine:
                 self._open_position(market, fill, None, bars[-1][0])
 
     async def _grid_bar(self, market, bars, kwargs, limits, allow_buy) -> None:
+        ctx = await self._grid_prepare(market, bars, kwargs)
+        if ctx:
+            for k in range(1, ctx["kwargs"]["levels"] + 1):
+                await self._grid_place(ctx, k, limits, allow_buy)
+
+    async def _grid_prepare(self, market, bars, kwargs) -> dict | None:
+        """Tijdstop en oude kooplimieten opruimen; geeft terug wat er te plaatsen valt."""
         b = self.book
         bar_ts = bars[-1][0]
         tf_ms = bars[-1][0] - bars[-2][0] if len(bars) > 1 else 3_600_000
         max_hold = (kwargs or {}).get("max_hold", 200)
-        # 1. tijdstop
         for pos in [p for p in b["positions"] if p["market"] == market]:
             if (bar_ts - pos["entry_bar"]) / tf_ms >= max_hold:
                 await self._cancel_orders(market, pos_id=pos["id"])
                 if any(p["id"] == pos["id"] for p in b["positions"]):
                     await self._sell_market(pos, "tijdstop")
-        # 2. oude kooplimieten weg (de prijzen schuiven mee met het gemiddelde)
+        # oude kooplimieten weg: de prijzen schuiven mee met het gemiddelde
         await self._cancel_orders(market, side="buy", bar_ts=bar_ts)
         sold = set(b["sold_levels"].pop(market, []))
         if kwargs is None:
-            return
+            return None
         ref = sma([x[4] for x in bars], kwargs["ref_n"])[-1]
         if ref is None:
-            return
+            return None
+        return {
+            "market": market,
+            "kwargs": kwargs,
+            "ref": ref,
+            "sold": sold,
+            "bar_ts": bar_ts,
+            "price": await self.broker.price(market),
+        }
+
+    async def _grid_place(self, ctx: dict, k: int, limits, allow_buy) -> None:
+        b, market, kwargs = self.book, ctx["market"], ctx["kwargs"]
         taken = {p["level"] for p in b["positions"] if p["market"] == market}
-        price_now = await self.broker.price(market)
-        for k in range(1, kwargs["levels"] + 1):
-            if k in taken or k in sold or not self._may_buy(limits, allow_buy):
+        if k in taken or k in ctx["sold"] or not self._may_buy(limits, allow_buy):
+            return
+        level_px = ctx["ref"] * (1 - k * kwargs["step"])
+        if ctx["price"] is not None and ctx["price"] <= level_px:
+            fill = await self.broker.market_buy(market, limits.max_per_buy)
+            if fill:
+                pos = self._open_position(market, fill, k, ctx["bar_ts"])
+                await self._place_take_profit(pos, kwargs["step"])
+            return
+        order = await self.broker.limit_buy(market, level_px, limits.max_per_buy)
+        if order:
+            order.update({"market": market, "side": "buy", "level": k, "bar": ctx["bar_ts"], "step": kwargs["step"]})
+            b["orders"].append(order)
+
+    async def on_grid_bars(self, items, limits: Limits, allow_buy: bool) -> None:
+        """Grid voor alle markten tegelijk: eerst overal niveau 1, dan niveau 2, enz.
+        Zo bezet niet één markt het hele maximum. items: (markt, bars, kwargs)."""
+        b = self.book
+        todo = []
+        for market, bars, kwargs in items:
+            if not bars:
                 continue
-            level_px = ref * (1 - k * kwargs["step"])
-            if price_now is not None and price_now <= level_px:
-                fill = await self.broker.market_buy(market, limits.max_per_buy)
-                if fill:
-                    pos = self._open_position(market, fill, k, bar_ts)
-                    await self._place_take_profit(pos, kwargs["step"])
+            last_seen = b["last_bar"].get(market)
+            if last_seen is not None and bars[-1][0] <= last_seen:
                 continue
-            order = await self.broker.limit_buy(market, level_px, limits.max_per_buy)
-            if order:
-                order.update({"market": market, "side": "buy", "level": k, "bar": bar_ts, "step": kwargs["step"]})
-                b["orders"].append(order)
+            try:
+                ctx = await self._grid_prepare(market, bars, kwargs)
+            except BrokerError as err:
+                self._error(f"{market}: {err}")
+                ctx = None
+            b["last_bar"][market] = bars[-1][0]
+            if ctx:
+                todo.append(ctx)
+        for k in range(1, max((c["kwargs"]["levels"] for c in todo), default=0) + 1):
+            for ctx in todo:
+                if k > ctx["kwargs"]["levels"]:
+                    continue
+                try:
+                    await self._grid_place(ctx, k, limits, allow_buy)
+                except BrokerError as err:
+                    self._error(f"{ctx['market']}: {err}")
+
+    def record_equity(self, now_ms: int, prices: dict[str, float]) -> None:
+        """Bewaar het resultaat per uur voor de grafiek; oudere punten worden uitgedund."""
+        eq = self.book.setdefault("equity", [])
+        if eq and now_ms - eq[-1][0] < 3_300_000:
+            return
+        eq.append([now_ms, round(self.pnl(prices), 2)])
+        if len(eq) > 3000:
+            self.book["equity"] = eq[:1500:2] + eq[1500:]
 
     async def _place_take_profit(self, pos: dict, step: float) -> None:
         try:

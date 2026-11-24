@@ -8,6 +8,7 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 |---|---|
 | 0.1 | Data + Lab (backtest, walk-forward) |
 | 0.2 | Handelsmotor, paper trading, schakelaar paper/live met slot, risicogrenzen, noodstop, handelsscherm |
+| 0.3 | Grid-orders eerlijk verdeeld over markten, jonge markten (< 240 dagen) uitgesloten, resultaatgrafiek |
 
 ## Hoe het werkt
 

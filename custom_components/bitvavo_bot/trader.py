@@ -22,6 +22,7 @@ from .strategies import live_target, param_specs, sma, ema
 _LOGGER = logging.getLogger(__name__)
 
 RESELECT_DAYS = 60
+SELECTION_VERSION = 2  # ophogen = parameters opnieuw kiezen na een regelwijziging
 LOCK_PAPER_DAYS = 28
 OVERRIDE_PHRASE = "IK ACCEPTEER HET RISICO"
 SECRET_KEY, SECRET_SECRET = "bitvavo_api_key", "bitvavo_api_secret"
@@ -125,12 +126,13 @@ class Trader:
             plan = {"strategie": pick["strategie"], "tijdschaal": pick["tijdschaal"], "params": {}, "selected_at": 0}
         key = f"{plan['strategie']} {plan['tijdschaal']}"
         plan["bewezen"] = key in report.get("kandidaten", [])
-        if now - plan.get("selected_at", 0) >= RESELECT_DAYS * DAY_MS:
+        if now - plan.get("selected_at", 0) >= RESELECT_DAYS * DAY_MS or plan.get("sel_v") != SELECTION_VERSION:
             data = await self.hass.async_add_executor_job(self.m.load_all_candles)
             plan["params"] = await self.hass.async_add_executor_job(
                 select_params, data, plan["strategie"], plan["tijdschaal"]
             )
             plan["selected_at"] = now
+            plan["sel_v"] = SELECTION_VERSION
         self.plan = plan
         await self.async_save()
 
@@ -178,8 +180,16 @@ class Trader:
                 self.signals[market] = "grid"
             else:
                 self.signals[market] = "long" if target and target[-1] else "vlak"
+            if strat != "grid":
+                for e in self.engines():
+                    await e.on_bar(market, bars, strat, kwargs, self.limits, self.trading, target)
+        if strat == "grid":
+            items = [(m, bars, kwargs) for m, (bars, kwargs, _t, _c) in prepared.items()]
             for e in self.engines():
-                await e.on_bar(market, bars, strat, kwargs, self.limits, self.trading, target)
+                await e.on_grid_bars(items, self.limits, self.trading)
+        now = int(time.time() * 1000)
+        for e in self.engines():
+            e.record_equity(now, self.prices)
         await self.async_save()
         self.m.notify()
 

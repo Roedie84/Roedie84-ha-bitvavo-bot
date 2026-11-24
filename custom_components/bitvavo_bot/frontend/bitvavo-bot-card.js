@@ -53,7 +53,8 @@ aside{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}
 .tfs{display:flex;gap:4px}.tfs button{background:none;border:0;color:${MUTED};padding:0 12px;min-height:36px;border-radius:6px;font-size:12px}
 .tfs button.on{background:#1D2636;color:#E7EAEE;font-weight:600}
 .legend{display:flex;flex-wrap:wrap;gap:16px;padding:10px 16px 0;font-size:12px;color:${MUTED}}
-.chart{height:440px;padding:8px 8px 8px 16px}canvas{width:100%;height:100%;display:block}
+.chart{height:440px;padding:8px 8px 8px 16px}
+.eq{height:160px;padding:0 8px 12px 16px}canvas{width:100%;height:100%;display:block}
 .tabs{display:flex;gap:4px;padding:8px 12px 0;border-bottom:1px solid #1D2430}
 .tabs button{background:none;border:0;border-bottom:2px solid transparent;color:${MUTED};font-size:13px;font-weight:600;padding:0 14px;min-height:44px}
 .tabs button.on{color:#E7EAEE;border-bottom-color:${BLUE}}
@@ -214,9 +215,10 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     <div class="chead"><b>${esc(s.market || "–")}</b><span class="px">${price(sel.price)}</span><span style="font-size:13px;font-weight:600;color:${col(sel.change)}">${sel.change == null ? "" : pct(sel.change * 100) + " 24u"}</span><span class="sub">Signaal: <span style="color:#E7EAEE;font-weight:600">${esc(sel.signal || "–")}</span></span><div class="grow"></div>
       <div class="tfs">${[["1h", "1u"], ["4h", "4u"], ["1d", "1d"]].map(([k, l]) => `<button class="${s.tf === k ? "on" : ""}" data-a="tf" data-v="${k}">${l}</button>`).join("")}</div></div>
     <div class="legend" id="legend"></div>
-    <div class="chart"><canvas role="img" aria-label="Koersgrafiek met candles, hulplijnen en koop- en verkoopmomenten"></canvas></div>
+    <div class="chart"><canvas id="px" role="img" aria-label="Koersgrafiek met candles, hulplijnen en koop- en verkoopmomenten"></canvas></div>
   </section>
   <section class="card"><div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${s.tab === k ? "on" : ""}" data-a="tab" data-v="${k}">${l}</button>`).join("")}</div><div class="scroll">${table}</div></section>
+  <section class="card"><div class="row" style="padding:14px 16px 8px"><h2>Resultaat sinds start</h2><span class="sub">${live ? "live" : "paper"} · per uur · na kosten</span></div><div class="eq"><canvas id="eq" role="img" aria-label="Verloop van het resultaat in euro"></canvas></div></section>
 </div>
 <aside>
   <section class="card"><h2 style="padding:14px 16px 6px">Markten</h2>${o.markets.map((m) => `<button class="mk ${m.market === s.market ? "on" : ""}" data-a="market" data-v="${esc(m.market)}"><span class="n">${esc(m.market)}${m.held ? `<i class="dot" title="positie open"></i>` : ""}</span><span class="p">${price(m.price)}</span><span class="c" style="color:${col(m.change)}">${m.change == null ? "–" : pct(m.change * 100, 1)}</span><span class="s" style="color:${m.signal === "long" || m.signal === "grid" ? "#7FB0FF" : MUTED}">${esc(m.signal)}</span></button>`).join("") || `<div class="empty">Nog geen markten.</div>`}</section>
@@ -233,7 +235,7 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
 
     root.querySelectorAll("[data-a]").forEach((el) => el.addEventListener("click", () => this.act(el.dataset.a, el.dataset.v)));
     root.querySelectorAll("[data-limit]").forEach((el) => el.addEventListener("change", () => { const v = parseFloat(el.value); if (v > 0) this.call("number", "set_value", { entity_id: el.dataset.limit, value: v }); }));
-    const canvas = root.querySelector("canvas");
+    const canvas = root.querySelector("#px");
     if (canvas && this._ro) { this._ro.disconnect(); this._ro.observe(canvas.parentElement); }
     this.renderLegend();
     this.draw();
@@ -246,8 +248,36 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     el.innerHTML = lines.map((l, i) => `<span><span style="color:${LINE_COLORS[i % 2]}">━</span> ${esc(l.name)}</span>`).join("") + `<span><span style="color:${UP}">▲</span> koop</span><span><span style="color:${DOWN_TXT}">▼</span> verkoop</span>`;
   }
 
+  drawEquity() {
+    const canvas = this.shadowRoot.querySelector("#eq");
+    if (!canvas || !this.o) return;
+    const box = canvas.parentElement.getBoundingClientRect();
+    const W = Math.max(200, box.width - 24), H = Math.max(80, box.height - 12), dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const g = canvas.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    g.font = "11px Inter,Roboto,system-ui,sans-serif";
+    const pts = this.o.book.verloop || [];
+    if (pts.length < 2) { g.fillStyle = MUTED; g.fillText("Het verloop verschijnt na een paar uur handelen.", 8, 24); return; }
+    const axis = 64, pw = W - axis, top = 8, ph = H - top - 18;
+    let hi = Math.max(0, ...pts.map((p) => p[1])), lo = Math.min(0, ...pts.map((p) => p[1]));
+    const pad = (hi - lo || 1) * 0.1; hi += pad; lo -= pad;
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0] || t0 + 1;
+    const x = (t) => ((t - t0) / (t1 - t0 || 1)) * pw, y = (v) => top + ((hi - v) / (hi - lo)) * ph;
+    g.strokeStyle = "#252E3D"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(0, y(0)); g.lineTo(pw, y(0)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = MUTED; g.fillText(eur(hi - pad), pw + 6, y(hi - pad) + 4); g.fillText(eur(0), pw + 6, y(0) + 4); if (y(lo + pad) - y(0) > 16) g.fillText(eur(lo + pad), pw + 6, y(lo + pad) + 4);
+    const last = pts[pts.length - 1][1];
+    g.strokeStyle = last >= 0 ? UP : DOWN_TXT; g.lineWidth = 2; g.beginPath();
+    pts.forEach((p, i) => (i ? g.lineTo(x(p[0]), y(p[1])) : g.moveTo(x(p[0]), y(p[1]))));
+    g.stroke();
+    const d = (t) => new Date(t).toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
+    g.fillStyle = MUTED; g.fillText(d(t0), 0, H - 2); g.fillText(d(t1), pw - 36, H - 2);
+  }
+
   draw() {
-    const canvas = this.shadowRoot.querySelector("canvas");
+    this.drawEquity();
+    const canvas = this.shadowRoot.querySelector("#px");
     if (!canvas) return;
     const box = canvas.parentElement.getBoundingClientRect();
     const W = Math.max(200, box.width - 24), H = Math.max(160, box.height - 16), dpr = window.devicePixelRatio || 1;

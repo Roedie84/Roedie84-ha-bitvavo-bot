@@ -1,0 +1,36 @@
+name: Test en release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pytest pytest-homeassistant-custom-component
+      - run: pytest -q
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release aanmaken als de versie nieuw is
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="v$(python3 -c "import json;print(json.load(open('custom_components/bitvavo_bot/manifest.json'))['version'])")"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION bestaat al."
+            exit 0
+          fi
+          gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes

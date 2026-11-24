@@ -59,6 +59,13 @@ aside{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}
 .tabs button{background:none;border:0;border-bottom:2px solid transparent;color:${MUTED};font-size:13px;font-weight:600;padding:0 14px;min-height:44px}
 .tabs button.on{color:#E7EAEE;border-bottom-color:${BLUE}}
 .scroll{overflow-x:auto}
+tbody tr{transition:background .12s}tbody tr:hover{background:#151C27}tbody tr[data-a]{cursor:pointer}
+.mk:hover{background:#141B26}.tabs button:hover,.tfs button:hover{color:#E7EAEE}
+.seg button:hover{color:#E7EAEE}.seg button.on:hover{color:#06101F}.seg button.on.live:hover{color:#fff}
+.stop:hover{background:#3A1620}.ghost:hover{background:#2A2212}button.pill:hover{border-color:#3A475C}
+.kpi{transition:border-color .12s}.kpi:hover{border-color:#2C3748}
+#px{cursor:crosshair}#px.drag{cursor:grabbing}#eq{cursor:crosshair}
+.hint{font-size:11px;color:#8E99AB;margin-left:auto}
 table{border-collapse:collapse;width:100%}
 th{font-weight:500;color:${MUTED};font-size:12px;text-align:right;padding:8px 12px;border-bottom:1px solid #1D2430;white-space:nowrap}
 td{font-size:13px;text-align:right;padding:10px 12px;border-bottom:1px solid #161C26;white-space:nowrap}
@@ -88,6 +95,9 @@ class BitvavoBotCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this.s = { tab: "pos", tf: null, market: null, modal: null, error: null };
+    this.view = { n: 160, off: 0 };
+    this.hover = null;
+    this.eqHover = null;
     this.o = null;
     this.chart = null;
   }
@@ -135,8 +145,8 @@ class BitvavoBotCard extends HTMLElement {
   act(a, v) {
     const s = this.s, o = this.o;
     if (a === "tab") s.tab = v;
-    else if (a === "tf") { s.tf = v; this.chart = null; this.loadChart(); }
-    else if (a === "market") { s.market = v; this.chart = null; this.loadChart(); }
+    else if (a === "tf") { s.tf = v; this.chart = null; this.view = { n: 160, off: 0 }; this.loadChart(); }
+    else if (a === "market") { if (v !== s.market) { s.market = v; this.chart = null; this.view = { n: 160, off: 0 }; this.loadChart(); } }
     else if (a === "paper") { if (o.mode === "live") s.modal = "paper"; }
     else if (a === "live") { if (o.mode !== "live") s.modal = o.lock.state === "op slot" ? "locked" : "live"; }
     else if (a === "stop") s.modal = "stop";
@@ -181,7 +191,7 @@ class BitvavoBotCard extends HTMLElement {
     const rows = (list, fn, cols, empty) => (list.length ? `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${list.map(fn).join("")}</tbody></table>` : `<div class="empty">${empty}</div>`);
     const tabs = [["pos", `Open posities (${b.open_posities})`], ["ord", `Open orders (${b.open_orders})`], ["tr", "Laatste trades"], ["lab", "Lab"]];
     let table = "";
-    if (s.tab === "pos") table = rows(b.posities, (p) => { const r = p.waarde != null ? p.waarde * 0.997 - p.inzet : null; return `<tr><td><b>${esc(p.markt)}</b></td><td>${eur(p.inzet)}</td><td>${price(p.koers_in)}</td><td>${eur(p.waarde)}</td><td style="color:${col(r)}">${eur(r, true)}</td><td style="color:${col(r)}">${r == null ? "–" : pct((100 * r) / p.inzet)}</td></tr>`; }, ["Markt", "Inzet", "Koers in", "Waarde nu", "Resultaat", "%"], "Geen open posities.");
+    if (s.tab === "pos") table = rows(b.posities, (p) => { const r = p.waarde != null ? p.waarde * 0.997 - p.inzet : null; return `<tr data-a="market" data-v="${esc(p.markt)}" title="Toon ${esc(p.markt)} in de grafiek"><td><b>${esc(p.markt)}</b></td><td>${eur(p.inzet)}</td><td>${price(p.koers_in)}</td><td>${eur(p.waarde)}</td><td style="color:${col(r)}">${eur(r, true)}</td><td style="color:${col(r)}">${r == null ? "–" : pct((100 * r) / p.inzet)}</td></tr>`; }, ["Markt", "Inzet", "Koers in", "Waarde nu", "Resultaat", "%"], "Geen open posities.");
     else if (s.tab === "ord") table = rows(o.orders, (r) => `<tr><td><b>${esc(r.markt)}</b></td><td>${esc(r.soort)}</td><td>${price(r.limiet)}</td><td>${eur(r.bedrag)}</td></tr>`, ["Markt", "Soort", "Limiet", "Bedrag"], "Geen orders in het boek.");
     else if (s.tab === "tr") table = rows(b.laatste_trades, (t) => `<tr><td><b>${esc(t.markt)}</b></td><td>${when(t.in)}</td><td>${when(t.uit)}</td><td>${eur(t.inzet)}</td><td style="color:${col(t.resultaat)}">${eur(t.resultaat, true)}</td><td style="color:${col(t.resultaat)}">${pct(t.pct)}</td><td>${esc(t.reden)}</td></tr>`, ["Markt", "In", "Uit", "Inzet", "Resultaat", "%", "Reden"], "Nog geen afgesloten trades.");
     else table = rows(o.lab.resultaten, (r) => `<tr><td>${r.geslaagd ? "✓" : "✕"} ${esc(NAMES[r.strategie] || r.strategie)} <span style="color:${MUTED}">${esc(r.versie || "")}</span></td><td>${esc(r.tijdschaal)}</td><td>${r.trades}</td><td style="color:${col(r.netto_pct)}">${pct(r.netto_pct, 3)}</td><td style="color:${col(r.alpha_pct)}">${pct(r.alpha_pct, 3)}</td><td>${nf(r.p, 4)}</td><td>${r.markten_positief_pct}%</td></tr>`, ["Hypothese", "Tijd", "Trades", "Netto/trade", "Alpha", "p", "Markten +"], "Het Lab heeft nog niet gedraaid.");
@@ -237,6 +247,12 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     root.querySelectorAll("[data-limit]").forEach((el) => el.addEventListener("change", () => { const v = parseFloat(el.value); if (v > 0) this.call("number", "set_value", { entity_id: el.dataset.limit, value: v }); }));
     const canvas = root.querySelector("#px");
     if (canvas && this._ro) { this._ro.disconnect(); this._ro.observe(canvas.parentElement); }
+    if (canvas) this.bindChart(canvas);
+    const eq = root.querySelector("#eq");
+    if (eq) {
+      eq.addEventListener("mousemove", (e) => { const r = eq.getBoundingClientRect(); this.eqHover = e.clientX - r.left; this.drawEquity(); });
+      eq.addEventListener("mouseleave", () => { this.eqHover = null; this.drawEquity(); });
+    }
     this.renderLegend();
     this.draw();
   }
@@ -245,7 +261,7 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     const el = this.shadowRoot.querySelector("#legend");
     if (!el) return;
     const lines = (this.chart && this.chart.lines) || [];
-    el.innerHTML = lines.map((l, i) => `<span><span style="color:${LINE_COLORS[i % 2]}">━</span> ${esc(l.name)}</span>`).join("") + `<span><span style="color:${UP}">▲</span> koop</span><span><span style="color:${DOWN_TXT}">▼</span> verkoop</span>`;
+    el.innerHTML = lines.map((l, i) => `<span><span style="color:${LINE_COLORS[i % 2]}">━</span> ${esc(l.name)}</span>`).join("") + `<span><span style="color:${UP}">▲</span> koop</span><span><span style="color:${DOWN_TXT}">▼</span> verkoop</span><span class="hint">scrollen = zoomen · slepen = schuiven · dubbelklik = terug</span>`;
   }
 
   drawEquity() {
@@ -273,6 +289,44 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     g.stroke();
     const d = (t) => new Date(t).toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
     g.fillStyle = MUTED; g.fillText(d(t0), 0, H - 2); g.fillText(d(t1), pw - 36, H - 2);
+    if (this.eqHover != null && this.eqHover >= 0 && this.eqHover <= pw) {
+      const tt = t0 + (this.eqHover / pw) * (t1 - t0);
+      let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - tt) < Math.abs(best[0] - tt)) best = p;
+      const hx = Math.round(x(best[0])) + 0.5, hy = y(best[1]);
+      g.strokeStyle = "#5B6880"; g.lineWidth = 1; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(hx, top); g.lineTo(hx, top + ph); g.stroke(); g.setLineDash([]);
+      g.fillStyle = best[1] >= 0 ? UP : DOWN_TXT; g.beginPath(); g.arc(hx, hy, 4, 0, Math.PI * 2); g.fill();
+      const txt = eur(best[1], true) + " · " + new Date(best[0]).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      g.font = "bold 11px Inter,Roboto,system-ui,sans-serif"; const tw = g.measureText(txt).width + 12, bx = Math.max(0, Math.min(pw - tw, hx - tw / 2));
+      g.fillStyle = "#2A3444"; g.fillRect(bx, 0, tw, 18); g.fillStyle = "#E7EAEE"; g.fillText(txt, bx + 6, 13);
+    }
+  }
+
+  bindChart(canvas) {
+    const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const total = () => ((this.chart && this.chart.bars) || []).length;
+    const clamp = () => { const t = total(); this.view.n = Math.max(20, Math.min(this.view.n, t || 20)); this.view.off = Math.max(0, Math.min(this.view.off, Math.max(0, t - this.view.n))); };
+    canvas.addEventListener("mousemove", (e) => {
+      const p = pos(e);
+      if (this._drag && this._geo) {
+        const moved = Math.round((p.x - this._drag.x) / this._geo.step);
+        this.view.off = this._drag.off + moved; clamp();
+      }
+      this.hover = p; this.draw();
+    });
+    canvas.addEventListener("mouseleave", () => { this.hover = null; this._drag = null; canvas.classList.remove("drag"); this.draw(); });
+    canvas.addEventListener("mousedown", (e) => { this._drag = { x: pos(e).x, off: this.view.off }; canvas.classList.add("drag"); });
+    canvas.addEventListener("mouseup", () => { this._drag = null; canvas.classList.remove("drag"); });
+    canvas.addEventListener("dblclick", () => { this.view = { n: 160, off: 0 }; clamp(); this.draw(); });
+    canvas.addEventListener("wheel", (e) => {
+      if (!this._geo) return;
+      e.preventDefault();
+      const g = this._geo, p = pos(e), before = this.view.n;
+      const fromRight = Math.max(0, (g.pw - p.x) / g.step);  // bars tussen cursor en rechterrand
+      this.view.n = Math.round(before * (e.deltaY > 0 ? 1.18 : 1 / 1.18)); clamp();
+      // houd de bar onder de cursor op zijn plek
+      this.view.off = Math.round(this.view.off + fromRight - fromRight * (this.view.n / before)); clamp();
+      this.hover = p; this.draw();
+    }, { passive: false });
   }
 
   draw() {
@@ -285,16 +339,22 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     const g = canvas.getContext("2d");
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
-    g.font = "11px Inter,Roboto,system-ui,sans-serif";
-    const bars = (this.chart && this.chart.bars) || [];
-    if (!bars.length) { g.fillStyle = MUTED; g.fillText(this.chart ? "Nog geen koersdata voor deze markt." : "Grafiek laden…", 8, 24); return; }
-    const axis = 64, volH = 48, timeH = 20, top = 8, ph = H - volH - timeH - top, pw = W - axis, n = bars.length, step = pw / n, bw = Math.max(1, step * 0.66);
+    const FONT = "11px Inter,Roboto,system-ui,sans-serif", BOLD = "bold 11px Inter,Roboto,system-ui,sans-serif";
+    g.font = FONT;
+    const all = (this.chart && this.chart.bars) || [];
+    this._geo = null;
+    if (!all.length) { g.fillStyle = MUTED; g.fillText(this.chart ? "Nog geen koersdata voor deze markt." : "Grafiek laden…", 8, 24); return; }
+    const v = this.view;
+    v.n = Math.max(20, Math.min(v.n, all.length)); v.off = Math.max(0, Math.min(v.off, all.length - v.n));
+    const i0 = all.length - v.off - v.n, bars = all.slice(i0, i0 + v.n);
+    const axis = 64, volH = 48, timeH = 20, top = 22, ph = H - volH - timeH - top, pw = W - axis, n = bars.length, step = pw / n, bw = Math.max(1, step * 0.66);
     let hi = -Infinity, lo = Infinity, vmax = 0;
     for (const b of bars) { hi = Math.max(hi, b[2]); lo = Math.min(lo, b[3]); vmax = Math.max(vmax, b[5]); }
     const span = hi - lo || 1; hi += span * 0.04; lo -= span * 0.04;
-    const y = (v) => top + ((hi - v) / (hi - lo)) * ph, x = (i) => i * step + step / 2;
+    const y = (val) => top + ((hi - val) / (hi - lo)) * ph, x = (i) => i * step + step / 2;
+    this._geo = { pw, step };
     g.strokeStyle = "#1A212C"; g.fillStyle = MUTED; g.lineWidth = 1; g.setLineDash([3, 4]);
-    for (let k = 0; k <= 4; k++) { const v = lo + ((hi - lo) * k) / 4, yy = Math.round(y(v)) + 0.5; g.beginPath(); g.moveTo(0, yy); g.lineTo(pw, yy); g.stroke(); g.fillText(price(v), pw + 6, yy + 4); }
+    for (let k = 0; k <= 4; k++) { const val = lo + ((hi - lo) * k) / 4, yy = Math.round(y(val)) + 0.5; g.beginPath(); g.moveTo(0, yy); g.lineTo(pw, yy); g.stroke(); g.fillText(price(val), pw + 6, yy + 4); }
     g.setLineDash([]);
     bars.forEach((b, i) => {
       const c = b[4] >= b[1] ? UP : DOWN, cx = Math.round(x(i)) + 0.5;
@@ -304,25 +364,59 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
       g.fillRect(x(i) - bw / 2, yt, bw, bh);
       g.globalAlpha = 0.35; const vh = vmax ? (b[5] / vmax) * (volH - 6) : 0; g.fillRect(x(i) - bw / 2, top + ph + volH - vh, bw, vh); g.globalAlpha = 1;
     });
-    ((this.chart && this.chart.lines) || []).forEach((l, li) => {
+    const lines = ((this.chart && this.chart.lines) || []).map((l) => ({ name: l.name, values: l.values.slice(i0 - (all.length - l.values.length), i0 - (all.length - l.values.length) + n) }));
+    g.save(); g.beginPath(); g.rect(0, top, pw, ph); g.clip();
+    lines.forEach((l, li) => {
       g.strokeStyle = LINE_COLORS[li % 2]; g.lineWidth = 1.5; g.beginPath(); let pen = false;
-      l.values.forEach((v, i) => { if (v == null) { pen = false; return; } const px = x(i + n - l.values.length), py = y(v); pen ? g.lineTo(px, py) : g.moveTo(px, py); pen = true; });
+      l.values.forEach((val, i) => { if (val == null) { pen = false; return; } const px = x(i), py = y(val); pen ? g.lineTo(px, py) : g.moveTo(px, py); pen = true; });
       g.stroke();
     });
-    const t0 = bars[0][0], dt = n > 1 ? bars[1][0] - bars[0][0] : 3600000;
+    g.restore();
+    const t0 = bars[0][0], dt = n > 1 ? bars[1][0] - bars[0][0] : 3600000, markAt = {};
     ((this.chart && this.chart.marks) || []).forEach((m) => {
       const i = Math.floor((m.t - t0) / dt);
       if (i < 0 || i >= n) return;
+      (markAt[i] = markAt[i] || []).push(m.side);
       const buy = m.side === "buy", px = x(i), py = buy ? y(bars[i][3]) + 12 : y(bars[i][2]) - 12;
       g.fillStyle = buy ? UP : DOWN_TXT; g.beginPath();
       if (buy) { g.moveTo(px, py - 7); g.lineTo(px - 5, py + 2); g.lineTo(px + 5, py + 2); } else { g.moveTo(px, py + 7); g.lineTo(px - 5, py - 2); g.lineTo(px + 5, py - 2); }
       g.fill();
     });
-    const last = bars[n - 1], ly = y(last[4]), lc = last[4] >= last[1] ? UP : DOWN;
-    g.fillStyle = lc; g.fillRect(pw + 2, ly - 9, axis - 4, 18); g.fillStyle = "#0A0D12"; g.font = "bold 11px Inter,Roboto,system-ui,sans-serif"; g.fillText(price(last[4]), pw + 6, ly + 4);
-    g.font = "11px Inter,Roboto,system-ui,sans-serif"; g.fillStyle = MUTED;
-    const every = Math.max(1, Math.round(n / 6));
-    for (let i = 0; i < n; i += every) g.fillText(new Date(bars[i][0]).toLocaleDateString("nl-NL", { day: "numeric", month: "short" }), Math.max(0, x(i) - 14), H - 4);
+    const last = all[all.length - 1], ly = y(last[4]), lc = last[4] >= last[1] ? UP : DOWN;
+    if (ly > top && ly < top + ph) { g.strokeStyle = lc; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, Math.round(ly) + 0.5); g.lineTo(pw, Math.round(ly) + 0.5); g.stroke(); g.setLineDash([]); g.fillStyle = lc; g.fillRect(pw + 2, ly - 9, axis - 4, 18); g.fillStyle = "#0A0D12"; g.font = BOLD; g.fillText(price(last[4]), pw + 6, ly + 4); }
+    g.font = FONT; g.fillStyle = MUTED;
+    const intraday = dt < 86400000, every = Math.max(1, Math.round(n / 6));
+    const tlabel = (t, full) => { const d = new Date(t); const day = d.toLocaleDateString("nl-NL", { day: "numeric", month: "short" }); return full && intraday ? day + " " + d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" }) : day; };
+    for (let i = 0; i < n; i += every) g.fillText(tlabel(bars[i][0]), Math.max(0, x(i) - 14), H - 4);
+
+    // ---- muis: kruisdraad, prijs- en tijdlabel, uitlezing van de candle
+    const h = this.hover;
+    let idx = n - 1, live = false;
+    if (h && h.x >= 0 && h.x <= pw) { idx = Math.max(0, Math.min(n - 1, Math.floor(h.x / step))); live = true; }
+    const b = bars[idx], prev = idx > 0 ? bars[idx - 1] : all[i0 - 1], chg = prev ? (b[4] / prev[4] - 1) * 100 : null, bc = b[4] >= b[1] ? UP : DOWN_TXT;
+    if (live) {
+      const cx = Math.round(x(idx)) + 0.5;
+      g.strokeStyle = "#5B6880"; g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(cx, top); g.lineTo(cx, top + ph + volH); g.stroke();
+      if (h.y >= top && h.y <= top + ph) {
+        const hy = Math.round(h.y) + 0.5;
+        g.beginPath(); g.moveTo(0, hy); g.lineTo(pw, hy); g.stroke(); g.setLineDash([]);
+        g.fillStyle = "#2A3444"; g.fillRect(pw + 2, hy - 9, axis - 4, 18); g.fillStyle = "#E7EAEE"; g.font = BOLD;
+        g.fillText(price(hi - ((h.y - top) / ph) * (hi - lo)), pw + 6, hy + 4);
+      }
+      g.setLineDash([]); g.font = BOLD;
+      const tl = tlabel(b[0], true), tw = g.measureText(tl).width + 12, tx = Math.max(0, Math.min(pw - tw, cx - tw / 2));
+      g.fillStyle = "#2A3444"; g.fillRect(tx, H - timeH + 2, tw, 18); g.fillStyle = "#E7EAEE"; g.fillText(tl, tx + 6, H - 5);
+    }
+    g.font = FONT;
+    let rx = 0; const put = (label, val, color) => { g.fillStyle = MUTED; g.fillText(label, rx, 12); rx += g.measureText(label).width + 4; g.fillStyle = color || "#E7EAEE"; g.fillText(val, rx, 12); rx += g.measureText(val).width + 12; };
+    if (pw > 520 || live) {
+      put("O", price(b[1]), bc); put("H", price(b[2]), bc); put("L", price(b[3]), bc); put("S", price(b[4]), bc);
+      if (chg != null) put("", pct(chg), col(chg));
+      if (pw > 620) put("Vol", nf(b[5], b[5] >= 100 ? 0 : 2));
+      if (pw > 760) lines.forEach((l, li) => { if (l.values[idx] != null) put(l.name, price(l.values[idx]), LINE_COLORS[li % 2]); });
+      if (live && markAt[idx]) put("", markAt[idx].map((sd) => (sd === "buy" ? "▲ koop" : "▼ verkoop")).join(" "), markAt[idx][0] === "buy" ? UP : DOWN_TXT);
+    }
   }
 }
 

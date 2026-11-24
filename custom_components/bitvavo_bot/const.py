@@ -1,7 +1,7 @@
 """Constanten voor Bitvavo Bot."""
 
 DOMAIN = "bitvavo_bot"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 API_BASE = "https://api.bitvavo.com/v2"
 CANDLE_INTERVAL = "1h"

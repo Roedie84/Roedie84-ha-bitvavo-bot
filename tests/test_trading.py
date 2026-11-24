@@ -150,7 +150,7 @@ async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_pa
         assert len(o["lab"]["resultaten"]) == 17 and o["plan"]["strategie"] == plan["strategie"]
         await ws.send_json({"id": 2, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": plan["tijdschaal"]})
         c = (await ws.receive_json())["result"]
-        assert 100 < len(c["bars"]) <= 160 and len(c["bars"][0]) == 6
+        assert 100 < len(c["bars"]) <= 600 and len(c["bars"][0]) == 6
         for line in c["lines"]:
             assert len(line["values"]) == len(c["bars"])
         await ws.send_json({"id": 3, "type": "bitvavo_bot/chart", "market": "NOPE-EUR"})

@@ -10,6 +10,7 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 | 0.2 | Handelsmotor, paper trading, schakelaar paper/live met slot, risicogrenzen, noodstop, handelsscherm |
 | 0.3 | Grid-orders eerlijk verdeeld over markten, jonge markten (< 240 dagen) uitgesloten, resultaatgrafiek |
 | 0.4 | Preregistratie v2: 3 nieuwe strategieën (relatieve sterkte, trend met marktfilter, volatiliteitsuitbraak), 4 jaar historie, automatisch overstappen op een Lab-kandidaat |
+| 0.5 | Grafiek met muisfuncties: kruisdraad, uitlezing per candle, zoomen, slepen |
 
 ## Hoe het werkt
 

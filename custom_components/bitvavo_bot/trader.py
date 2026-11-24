@@ -371,7 +371,7 @@ class Trader:
             ],
         }
 
-    def chart(self, market: str, timeframe: str, count: int = 160) -> dict:
+    def chart(self, market: str, timeframe: str, count: int = 600) -> dict:
         """Candles, hulplijnen en koop/verkoopmomenten voor de grafiek (in executor)."""
         hour = self.m.store.load_candles(market)
         bars = closed_bars(hour, TIMEFRAMES.get(timeframe, 1))

@@ -354,7 +354,12 @@ class Trader:
                 {
                     "markt": o["market"],
                     "soort": "Kooplimiet" if o["side"] == "buy" else "Verkooplimiet",
+                    "niveau": o.get("level"),
                     "limiet": o["price"],
+                    "koers_nu": self.prices.get(o["market"]),
+                    "afstand_pct": round(100 * (o["price"] / self.prices[o["market"]] - 1), 2)
+                    if self.prices.get(o["market"])
+                    else None,
                     "bedrag": round(o["price"] * o["amount"], 2),
                 }
                 for o in active.book["orders"]

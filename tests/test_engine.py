@@ -165,3 +165,17 @@ async def test_equity_is_recorded_hourly_and_thinned():
         e.record_equity(i * 3_600_000, prices)
     assert len(e.book["equity"]) < 3000 and e.book["equity"][-1][0] == 3199 * 3_600_000
     assert len(e.summary(prices)["verloop"]) == 720
+
+
+async def test_position_row_explains_itself():
+    e, prices = make({"A-EUR": 97.0})
+    await e.on_bar("A-EUR", flat(4), "grid", GRID, LIM, True)
+    (row,) = e.summary(prices)["posities"]
+    assert row["markt"] == "A-EUR" and row["niveau"] == 1 and row["inzet"] == 25.0
+    assert row["koers_nu"] == 97.0 and row["doel"] == pytest.approx(row["koers_in"] * 1.02)
+    assert row["aantal"] > 0 and row["sinds"] > 0
+    # verse positie: koers vrijwel gelijk, resultaat licht negatief door de kosten
+    assert abs(row["koers_pct"]) < 0.1 and -0.25 < row["resultaat"] < 0 and row["pct"] < 0
+    prices["A-EUR"] = 99.0
+    (row,) = e.summary(prices)["posities"]
+    assert row["koers_pct"] > 1.9 and row["resultaat"] > 0.3

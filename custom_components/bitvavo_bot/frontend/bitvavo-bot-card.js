@@ -71,6 +71,10 @@ th{font-weight:500;color:${MUTED};font-size:12px;text-align:right;padding:8px 12
 td{font-size:13px;text-align:right;padding:10px 12px;border-bottom:1px solid #161C26;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 .empty{padding:22px 16px;font-size:13px;color:${MUTED}}
+.sub2{font-size:11px;color:${MUTED};margin-top:2px;font-weight:400}
+.note{padding:10px 12px 12px;font-size:12px;color:${MUTED};line-height:1.5}
+.goal{height:4px;background:#1D2430;border-radius:2px;margin-top:6px}.goal i{display:block;height:4px;background:${UP};border-radius:2px}
+td{vertical-align:top}
 h2{margin:0;font-size:14px;font-weight:600}
 .pad{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
 .row{display:flex;justify-content:space-between;gap:12px;font-size:13px}.row span:first-child{color:${MUTED}}
@@ -191,8 +195,16 @@ class BitvavoBotCard extends HTMLElement {
     const rows = (list, fn, cols, empty) => (list.length ? `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${list.map(fn).join("")}</tbody></table>` : `<div class="empty">${empty}</div>`);
     const tabs = [["pos", `Open posities (${b.open_posities})`], ["ord", `Open orders (${b.open_orders})`], ["tr", "Laatste trades"], ["lab", "Lab"]];
     let table = "";
-    if (s.tab === "pos") table = rows(b.posities, (p) => { const r = p.waarde != null ? p.waarde * 0.997 - p.inzet : null; return `<tr data-a="market" data-v="${esc(p.markt)}" title="Toon ${esc(p.markt)} in de grafiek"><td><b>${esc(p.markt)}</b></td><td>${eur(p.inzet)}</td><td>${price(p.koers_in)}</td><td>${eur(p.waarde)}</td><td style="color:${col(r)}">${eur(r, true)}</td><td style="color:${col(r)}">${r == null ? "–" : pct((100 * r) / p.inzet)}</td></tr>`; }, ["Markt", "Inzet", "Koers in", "Waarde nu", "Resultaat", "%"], "Geen open posities.");
-    else if (s.tab === "ord") table = rows(o.orders, (r) => `<tr><td><b>${esc(r.markt)}</b></td><td>${esc(r.soort)}</td><td>${price(r.limiet)}</td><td>${eur(r.bedrag)}</td></tr>`, ["Markt", "Soort", "Limiet", "Bedrag"], "Geen orders in het boek.");
+    const two = (main, sub, c) => `<div style="color:${c || "#E7EAEE"}">${main}</div><div class="sub2" style="color:${c ? c : MUTED}">${sub}</div>`;
+    if (s.tab === "pos") table = rows(b.posities, (p) => {
+      let goal = `<span style="color:${MUTED}">geen verkooplimiet</span>`;
+      if (p.doel && p.koers_nu) {
+        const done = Math.max(0, Math.min(100, (100 * (p.koers_nu - p.koers_in)) / (p.doel - p.koers_in || 1))), togo = (p.doel / p.koers_nu - 1) * 100;
+        goal = `<div>${price(p.doel)} <span style="color:${MUTED}">· nog ${pct(togo)}</span></div><div class="goal" title="Van instapkoers naar verkoopdoel"><i style="width:${done}%"></i></div>`;
+      }
+      return `<tr data-a="market" data-v="${esc(p.markt)}" title="Toon ${esc(p.markt)} in de grafiek"><td><b>${esc(p.markt)}</b>${p.niveau ? `<div class="sub2">gridniveau ${p.niveau}</div>` : ""}</td><td>${two(when(p.sinds), nf(p.aantal, 4) + " stuks")}</td><td>${price(p.koers_in)}</td><td>${two(price(p.koers_nu), p.koers_pct == null ? "" : pct(p.koers_pct), col(p.koers_pct))}</td><td style="min-width:170px">${goal}</td><td>${two(eur(p.inzet), "waarde " + eur(p.waarde))}</td><td>${two(eur(p.resultaat, true), pct(p.pct), col(p.resultaat))}</td></tr>`;
+    }, ["Markt", "Gekocht", "Koers in", "Koers nu", "Verkoopdoel", "Inzet", "Resultaat na kosten"], "Geen open posities.") + (b.posities.length ? `<div class="note">Resultaat is wat je overhoudt als je nu verkoopt, na aan- en verkoopkosten (samen ruim 0,5%). Een verse positie begint daarom licht in de min, ook als de koers niet bewoog.</div>` : "");
+    else if (s.tab === "ord") table = rows(o.orders, (r) => `<tr data-a="market" data-v="${esc(r.markt)}"><td><b>${esc(r.markt)}</b>${r.niveau ? `<div class="sub2">gridniveau ${r.niveau}</div>` : ""}</td><td style="color:${r.soort === "Kooplimiet" ? UP : DOWN_TXT}">${esc(r.soort)}</td><td>${price(r.limiet)}</td><td>${price(r.koers_nu)}</td><td>${r.afstand_pct == null ? "–" : pct(r.afstand_pct)}</td><td>${eur(r.bedrag)}</td></tr>`, ["Markt", "Soort", "Limiet", "Koers nu", "Afstand tot limiet", "Bedrag"], "Geen orders in het boek.") + (o.orders.length ? `<div class="note">Een kooplimiet wordt pas uitgevoerd als de koers tot de limiet daalt; een verkooplimiet als de koers ertoe stijgt.</div>` : "");
     else if (s.tab === "tr") table = rows(b.laatste_trades, (t) => `<tr><td><b>${esc(t.markt)}</b></td><td>${when(t.in)}</td><td>${when(t.uit)}</td><td>${eur(t.inzet)}</td><td style="color:${col(t.resultaat)}">${eur(t.resultaat, true)}</td><td style="color:${col(t.resultaat)}">${pct(t.pct)}</td><td>${esc(t.reden)}</td></tr>`, ["Markt", "In", "Uit", "Inzet", "Resultaat", "%", "Reden"], "Nog geen afgesloten trades.");
     else table = rows(o.lab.resultaten, (r) => `<tr><td>${r.geslaagd ? "✓" : "✕"} ${esc(NAMES[r.strategie] || r.strategie)} <span style="color:${MUTED}">${esc(r.versie || "")}</span></td><td>${esc(r.tijdschaal)}</td><td>${r.trades}</td><td style="color:${col(r.netto_pct)}">${pct(r.netto_pct, 3)}</td><td style="color:${col(r.alpha_pct)}">${pct(r.alpha_pct, 3)}</td><td>${nf(r.p, 4)}</td><td>${r.markten_positief_pct}%</td></tr>`, ["Hypothese", "Tijd", "Trades", "Netto/trade", "Alpha", "p", "Markten +"], "Het Lab heeft nog niet gedraaid.");
     const checks = Object.entries(CHECKS).map(([k, label]) => { const ok = lock.checks[k]; const extra = k === "paper_28_dagen" ? ` <span style="color:${MUTED}">(${lock.paper_dagen} van ${lock.nodig_dagen})</span>` : ""; return `<div class="chk"><span style="color:${ok ? UP : DOWN_TXT};font-weight:700">${ok ? "✓" : "✕"}</span><span>${label}${extra}</span></div>`; }).join("");

@@ -108,17 +108,30 @@ class Engine:
             "dagstop": b["day_paused"],
             "gestart": datetime.fromtimestamp(b["started"] / 1000, tz=timezone.utc).isoformat(),
             "laatste_fout": b["last_error"],
-            "posities": [
-                {
-                    "markt": p["market"],
-                    "inzet": round(p["cost"], 2),
-                    "koers_in": p["entry_px"],
-                    "waarde": round(p["amount"] * prices[p["market"]], 2) if prices.get(p["market"]) else None,
-                }
-                for p in b["positions"]
-            ],
+            "posities": [self._position_row(p, prices) for p in b["positions"]],
             "laatste_trades": b["trades"][-10:][::-1],
             "verloop": b.get("equity", [])[-720:],
+        }
+
+    def _position_row(self, p: dict, prices: dict[str, float]) -> dict:
+        px = prices.get(p["market"])
+        target = next(
+            (o["price"] for o in self.book["orders"] if o["side"] == "sell" and o.get("pos_id") == p["id"]), None
+        )
+        result = p["amount"] * px * (1 - EXIT_COST) - p["cost"] if px else None
+        return {
+            "markt": p["market"],
+            "sinds": p["entry_ts"],
+            "niveau": p.get("level"),
+            "aantal": p["amount"],
+            "inzet": round(p["cost"], 2),
+            "koers_in": p["entry_px"],
+            "koers_nu": px,
+            "koers_pct": round(100 * (px / p["entry_px"] - 1), 2) if px and p["entry_px"] else None,
+            "doel": target,
+            "waarde": round(p["amount"] * px, 2) if px else None,
+            "resultaat": round(result, 2) if result is not None else None,
+            "pct": round(100 * result / p["cost"], 2) if result is not None and p["cost"] else None,
         }
 
     # ------------------------------------------------------------- dagbewaking

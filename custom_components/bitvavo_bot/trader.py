@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 
 import yaml
+from typing import Callable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -16,8 +17,9 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import BitvavoError, BitvavoPrivateClient
 from .brokers import LiveBroker, PaperBroker
 from .engine import BrokerError, Engine, Limits, new_book
-from .lab import DAY_MS, TIMEFRAMES, Context, closed_bars, select_params
+from .lab import DAY_MS, TIMEFRAMES, Context, closed_bars, resample, select_params
 from .strategies import compute_target, ema, param_specs, sma
+from .stream import BitvavoStream
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +44,10 @@ class Trader:
         self.trading = True
         self.live = False
         self.override = False
-        self.paper = Engine(new_book(), PaperBroker(self.prices), "paper")
+        self.stream = BitvavoStream(async_get_clientsession(hass), lambda: manager.markets, self.prices)
+        self.paper = Engine(new_book(), PaperBroker(self.prices, extremes=self.stream.extremes), "paper")
+        self._listeners: set = set()
+        self._pushed = -1
         self.live_engine: Engine | None = None
         self._live_book: dict | None = None
         self.signals: dict[str, str] = {}
@@ -203,6 +208,7 @@ class Trader:
         now = int(time.time() * 1000)
         for e in self.engines():
             e.record_equity(now, self.prices)
+        self.stream.reset_extremes()  # nieuwe orders zien alleen koersen van ná hun plaatsing
         await self.async_save()
         self.m.notify()
 
@@ -219,14 +225,50 @@ class Trader:
     async def async_minute(self) -> None:
         if not self.m.markets:
             return
-        await self.async_poll_prices()
+        if not self.stream.fresh:
+            await self.async_poll_prices()  # terugval: de koersstroom ligt eruit
         now = int(time.time() * 1000)
         for e in self.engines():
             e.roll_day(now, self.prices, self.limits)
             if e.book["orders"]:
                 await e.poll()
+        self.stream.reset_extremes()
         await self._save_if_changed()
         self.m.notify()
+
+    async def async_fast_tick(self) -> None:
+        """Elke paar seconden: paper-limietorders toetsen aan de koersstroom."""
+        if not self.stream.fresh or not self.paper.book["orders"]:
+            return
+        before = self._signature()
+        await self.paper.poll()
+        self.stream.reset_extremes()
+        if self._signature() != before:
+            await self._save_if_changed()
+            self.m.notify()
+
+    # ------------------------------------------------------- live naar het scherm
+
+    def stream_subscribe(self, listener) -> Callable[[], None]:
+        self._listeners.add(listener)
+        self._pushed = -1
+        return lambda: self._listeners.discard(listener)
+
+    def push_live(self) -> None:
+        """Stuur de actuele stand naar open schermen (alleen als er iets veranderde)."""
+        if not self._listeners:
+            return
+        marker = (self.stream.version, self._signature(), self.stream.fresh)
+        if marker == self._pushed:
+            return
+        self._pushed = marker
+        payload = {
+            "live": self.overview(light=True),
+            "candles": self.stream.forming,
+            "stream": self.stream.fresh,
+        }
+        for listener in list(self._listeners):
+            listener(payload)
 
     # ------------------------------------------------------------- slot & live
 
@@ -327,7 +369,7 @@ class Trader:
 
     # ------------------------------------------------------------- voor het scherm
 
-    def overview(self) -> dict:
+    def overview(self, light: bool = False) -> dict:
         lock = self.lock_status()
         active = self.active
         held = {p["market"] for p in active.book["positions"]}
@@ -348,8 +390,9 @@ class Trader:
                     (plan.get("selected_at", 0) + RESELECT_DAYS * DAY_MS) / 1000, tz=timezone.utc
                 ).isoformat(),
             },
-            "book": active.summary(self.prices),
-            "paper": self.paper.summary(self.prices),
+            "book": active.summary(self.prices, light),
+            "paper": self.paper.summary(self.prices, True),
+            "stream": self.stream.fresh,
             "orders": [
                 {
                     "markt": o["market"],
@@ -379,7 +422,7 @@ class Trader:
     def chart(self, market: str, timeframe: str, count: int = 600) -> dict:
         """Candles, hulplijnen en koop/verkoopmomenten voor de grafiek (in executor)."""
         hour = self.m.store.load_candles(market)
-        bars = closed_bars(hour, TIMEFRAMES.get(timeframe, 1))
+        bars = resample(hour, TIMEFRAMES.get(timeframe, 1))  # laatste periode mag nog onvolledig zijn
         closes = [b[4] for b in bars]
         lines = []
         plan = self.plan
@@ -404,4 +447,6 @@ class Trader:
             "bars": [list(b) for b in bars[-count:]],
             "lines": [{"name": n, "values": v[-count:]} for n, v in lines],
             "marks": marks,
+            "last_hour": int(hour[-1][0]) if hour else 0,
+            "tf_ms": TIMEFRAMES.get(timeframe, 1) * 3_600_000,
         }

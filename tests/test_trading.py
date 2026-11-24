@@ -95,7 +95,7 @@ async def test_paper_starts_and_live_is_locked(hass: HomeAssistant, tmp_path):
         assert not trader.live
 
         # met sleutel en een (nagebootste) beurs
-        (tmp_path / "secrets.yaml").write_text("bitvavo_api_key: abc\nbitvavo_api_secret: def\n")
+        (tmp_path / "secrets.yaml").write_text("bitvavo_api_key: SLEUTEL-GEHEIM-1\nbitvavo_api_secret: GEHEIM-WOORD-2\n")
         ex = FakeExchange(eur=412.6)
         with patch("custom_components.bitvavo_bot.api.BitvavoPrivateClient.request", lambda self, *a, **k: ex.request(*a, **k)):
             await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.bitvavo_bot_live"}, blocking=True)
@@ -115,7 +115,7 @@ async def test_paper_starts_and_live_is_locked(hass: HomeAssistant, tmp_path):
 
             saved = json.loads((tmp_path / "bitvavo_bot" / "trader_state.json").read_text())
             assert saved["live"] is True and saved["limits"]["max_per_buy"] == 50.0 and saved["override"] is True
-            assert "abc" not in json.dumps(saved) and "def" not in json.dumps(saved["plan"])
+            assert "SLEUTEL-GEHEIM-1" not in json.dumps(saved) and "GEHEIM-WOORD-2" not in json.dumps(saved)
 
             await hass.services.async_call("button", "press", {"entity_id": "button.bitvavo_bot_noodstop"}, blocking=True)
         assert not trader.live and not trader.trading
@@ -216,3 +216,53 @@ async def test_unproven_plan_yields_to_lab_candidate(hass: HomeAssistant, tmp_pa
         assert trader.plan["bewezen"] is True
         assert trader.paper.book["positions"] == [] and trader.paper.book["orders"] == []
         assert hass.states.get("sensor.bitvavo_bot_strategie").state == other
+
+
+async def test_live_push_to_screen_and_fast_paper_fills(hass: HomeAssistant, tmp_path, hass_ws_client):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        trader = entry.runtime_data.trader
+        ws = await hass_ws_client(hass)
+        await ws.send_json({"id": 5, "type": "bitvavo_bot/stream"})
+        assert (await ws.receive_json())["success"]
+        first = (await ws.receive_json())["event"]  # direct de actuele stand
+        assert first["live"]["mode"] == "paper" and "verloop" not in first["live"]["book"]
+        assert first["stream"] is False  # in de test is er geen koersstroom
+
+        # koersstroom levert een transactie en een lopende candle
+        trader.stream.connected = True
+        trader.stream.handle({"event": "ticker", "market": "BTC-EUR", "lastPrice": "12345.5"})
+        trader.stream.handle({"event": "candles", "market": "BTC-EUR", "interval": "1h", "candle": [[str(now), "1", "2", "0.5", "1.5", "3"]]})
+        trader.push_live()
+        ev = (await ws.receive_json())["event"]
+        assert ev["stream"] is True and ev["candles"]["BTC-EUR"][0] == now
+        assert next(m for m in ev["live"]["markets"] if m["market"] == "BTC-EUR")["price"] == 1.5
+        trader.push_live()  # niets veranderd: geen nieuw bericht
+        trader.stream.handle({"event": "ticker", "market": "ETH-EUR", "lastPrice": "2222"})
+        trader.push_live()
+        ev = (await ws.receive_json())["event"]
+        assert next(m for m in ev["live"]["markets"] if m["market"] == "ETH-EUR")["price"] == 2222.0
+
+        # snelle controle van paper-orders via de koersstroom
+        trader.paper.book["orders"] = [{"id": "x", "market": "ETH-EUR", "side": "buy", "price": 2000.0, "amount": 0.0125, "level": 1, "bar": now, "step": 0.02}]
+        trader.paper.book["positions"] = []
+        trader.stream.reset_extremes()
+        await trader.async_fast_tick()
+        assert trader.paper.book["positions"] == []
+        trader.stream.handle({"event": "ticker", "market": "ETH-EUR", "lastPrice": "1995"})
+        trader.stream.handle({"event": "ticker", "market": "ETH-EUR", "lastPrice": "2010"})
+        await trader.async_fast_tick()
+        (pos,) = trader.paper.book["positions"]
+        assert pos["market"] == "ETH-EUR" and pos["entry_px"] == 2000.0
+        assert [o["side"] for o in trader.paper.book["orders"]] == ["sell"]
+
+        # met een verse koersstroom haalt de minuutcyclus geen koersen meer via REST
+        with patch("custom_components.bitvavo_bot.api.BitvavoPublicClient.ticker_prices", side_effect=AssertionError("REST niet nodig")):
+            await trader.async_minute()
+        trader.stream.connected = False
+        await trader.async_minute()  # terugval op REST werkt
+
+        await ws.send_json({"id": 6, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": "4h"})
+        c = (await ws.receive_json())["result"]
+        assert c["tf_ms"] == 4 * 3_600_000 and c["last_hour"] > 0

@@ -66,6 +66,9 @@ tbody tr{transition:background .12s}tbody tr:hover{background:#151C27}tbody tr[d
 .kpi{transition:border-color .12s}.kpi:hover{border-color:#2C3748}
 #px{cursor:crosshair}#px.drag{cursor:grabbing}#eq{cursor:crosshair}
 .hint{font-size:11px;color:#8E99AB;margin-left:auto}
+.pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2EBD85;margin-right:6px;animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,189,133,.6)}100%{box-shadow:0 0 0 7px rgba(46,189,133,0)}}
+@media (prefers-reduced-motion: reduce){.pulse{animation:none}}
 table{border-collapse:collapse;width:100%}
 th{font-weight:500;color:${MUTED};font-size:12px;text-align:right;padding:8px 12px;border-bottom:1px solid #1D2430;white-space:nowrap}
 td{font-size:13px;text-align:right;padding:10px 12px;border-bottom:1px solid #161C26;white-space:nowrap}
@@ -102,19 +105,55 @@ class BitvavoBotCard extends HTMLElement {
     this.view = { n: 160, off: 0 };
     this.hover = null;
     this.eqHover = null;
+    this.forming = {};
+    this.streamOn = false;
+    this._cache = {};
     this.o = null;
     this.chart = null;
   }
   setConfig(config) { this.config = config || {}; }
   getCardSize() { return 20; }
-  set hass(h) { this._hass = h; if (!this.o && !this._busy) this.load(); }
+  set hass(h) { this._hass = h; if (!this.o && !this._busy) this.load(); this.subscribe(); }
 
   connectedCallback() {
     this._t1 = setInterval(() => this.load(), 10000);
     this._t2 = setInterval(() => this.loadChart(), 60000);
     this._ro = new ResizeObserver(() => this.draw());
+    this.subscribe();
   }
-  disconnectedCallback() { clearInterval(this._t1); clearInterval(this._t2); this._ro && this._ro.disconnect(); }
+  disconnectedCallback() {
+    clearInterval(this._t1); clearInterval(this._t2); this._ro && this._ro.disconnect();
+    if (this._unsub) { this._unsub(); this._unsub = null; }
+    this._subscribing = false;
+  }
+
+  subscribe() {
+    // de integratie stuurt elke seconde de actuele stand; de 10-secondenpoll blijft als vangnet
+    if (this._unsub || this._subscribing || !this._hass || !this._hass.connection || !this.isConnected) return;
+    this._subscribing = true;
+    this._hass.connection.subscribeMessage((ev) => this.onLive(ev), { type: "bitvavo_bot/stream" })
+      .then((unsub) => { this._subscribing = false; if (this.isConnected) this._unsub = unsub; else unsub(); })
+      .catch(() => { this._subscribing = false; });
+  }
+
+  onLive(ev) {
+    this.forming = ev.candles || {};
+    this.streamOn = !!ev.stream;
+    if (this.o && ev.live) {
+      this.o = { ...this.o, ...ev.live, book: { ...this.o.book, ...ev.live.book } };
+      this.render();
+    }
+  }
+
+  liveBars() {
+    // afgesloten uren van de server + de lopende uurcandle uit de koersstroom
+    const c = this.chart, bars = (c && c.bars) || [], f = this.forming && this.forming[this.s.market];
+    if (!bars.length || !f || !c.tf_ms || f[0] <= c.last_hour) return bars;
+    const bucket = f[0] - (f[0] % c.tf_ms), last = bars[bars.length - 1];
+    if (bucket === last[0]) return bars.slice(0, -1).concat([[last[0], last[1], Math.max(last[2], f[2]), Math.min(last[3], f[3]), f[4], last[5] + f[5]]]);
+    if (bucket > last[0]) return bars.concat([[bucket, f[1], f[2], f[3], f[4], f[5]]]);
+    return bars;
+  }
 
   async load() {
     if (!this._hass || this._busy) return;
@@ -163,7 +202,7 @@ class BitvavoBotCard extends HTMLElement {
     else if (a === "go-stop") return this.call("button", "press", { entity_id: E.stop });
     else if (a === "go-restore") return this.call("bitvavo_bot", "restore_lock", {});
     else if (a === "go-override") return this.call("bitvavo_bot", "override_lock", { bevestiging: this.shadowRoot.querySelector("#phrase").value });
-    this.render(true);
+    this.render();
   }
 
   modalHtml() {
@@ -178,19 +217,53 @@ class BitvavoBotCard extends HTMLElement {
     return "";
   }
 
-  render(force) {
+  put(id, html, keepFocus) {
+    // alleen een regio verversen als de inhoud echt anders is: geen geflikker, hover blijft staan
+    if (this._cache[id] === html) return;
+    const el = this.shadowRoot.getElementById(id);
+    if (!el) return;
+    if (keepFocus && el.contains(this.shadowRoot.activeElement)) return;
+    el.innerHTML = html;
+    this._cache[id] = html;
+  }
+
+  shell() {
     const root = this.shadowRoot;
-    const focused = root.activeElement && root.activeElement.tagName === "INPUT";
-    if (focused && !force) return;
+    root.innerHTML = `<style>${CSS}</style><div class="root" id="root">
+<header id="r-head"></header><div id="r-ban"></div><section class="kpis" id="r-kpi"></section>
+<main><div class="left">
+  <section class="card"><div class="chead" id="r-chead"></div><div class="legend" id="legend"></div><div class="chart"><canvas id="px" role="img" aria-label="Koersgrafiek met candles, hulplijnen en koop- en verkoopmomenten"></canvas></div></section>
+  <section class="card" id="r-table"></section>
+  <section class="card"><div class="row" style="padding:14px 16px 8px" id="r-eqhead"></div><div class="eq"><canvas id="eq" role="img" aria-label="Verloop van het resultaat in euro"></canvas></div></section>
+</div><aside>
+  <section class="card" id="r-mk"></section><section class="card pad" id="r-strat"></section><section class="card pad" id="r-lim"></section><section class="card pad" id="r-lock"></section>
+</aside></main><div id="r-modal"></div></div>`;
+    this._cache = {};
+    const el = root.getElementById("root");
+    el.addEventListener("click", (e) => { const t = e.target.closest("[data-a]"); if (t) this.act(t.dataset.a, t.dataset.v); });
+    el.addEventListener("change", (e) => { const t = e.target.closest("[data-limit]"); if (!t) return; const v = parseFloat(t.value); if (v > 0) this.call("number", "set_value", { entity_id: t.dataset.limit, value: v }); });
+    const canvas = root.getElementById("px"), eq = root.getElementById("eq");
+    this.bindChart(canvas);
+    eq.addEventListener("mousemove", (e) => { const r = eq.getBoundingClientRect(); this.eqHover = e.clientX - r.left; this.drawEquity(); });
+    eq.addEventListener("mouseleave", () => { this.eqHover = null; this.drawEquity(); });
+    if (this._ro) { this._ro.disconnect(); this._ro.observe(canvas.parentElement); }
+    this._shell = true;
+  }
+
+  render() {
+    const root = this.shadowRoot;
     if (!this.o) {
+      this._shell = false;
       root.innerHTML = `<style>${CSS}</style><div class="root"><div class="banner ${this.loadErr ? "bad" : ""}">${esc(this.loadErr || "Bitvavo Bot wordt geladen…")}</div></div>`;
       return;
     }
+    if (!this._shell || !root.getElementById("root")) this.shell();
     const o = this.o, s = this.s, b = o.book, lock = o.lock, plan = o.plan, live = o.mode === "live";
     const sel = o.markets.find((m) => m.market === s.market) || {};
     const used = Math.min(100, (100 * b.ingezet) / (o.limits.max_total || 1));
     const dataPill = o.data.status === "gereed" ? `<span class="pill">Data gereed · ${o.markets.length} markten</span>` : `<span class="pill ${o.data.status === "fout" ? "bad" : "warn"}">Data ${esc(o.data.status)} ${esc(o.data.progress || "")}</span>`;
     const planPill = !plan ? `<span class="pill warn">Wacht op Lab</span>` : plan.bewezen ? `<span class="pill ok">Strategie door Lab</span>` : `<span class="pill warn">Strategie onbewezen</span>`;
+    const livePill = this.streamOn ? `<span class="pill ok" title="Koersen komen direct van Bitvavo binnen"><i class="pulse"></i>Live koersen</span>` : `<span class="pill warn" title="De directe koersstroom is er niet; koersen worden per minuut opgehaald">Koersen per minuut</span>`;
     const kpi = (l, v, sub, c) => `<div class="card kpi"><div class="l">${l}</div><div class="v" style="color:${c || "#E7EAEE"}">${v}</div><div class="sub">${sub}</div></div>`;
     const rows = (list, fn, cols, empty) => (list.length ? `<table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${list.map(fn).join("")}</tbody></table>` : `<div class="empty">${empty}</div>`);
     const tabs = [["pos", `Open posities (${b.open_posities})`], ["ord", `Open orders (${b.open_orders})`], ["tr", "Laatste trades"], ["lab", "Lab"]];
@@ -211,60 +284,31 @@ class BitvavoBotCard extends HTMLElement {
     const lockBtn = lock.state === "overbrugd" ? `<button class="ghost" data-a="go-restore">Slot herstellen</button>` : lock.state === "op slot" ? `<button class="ghost" data-a="override">Slot overbruggen…</button>` : "";
     const lockState = { "op slot": ["Op slot", "warn"], open: ["Open", "ok"], overbrugd: ["Overbrugd", "bad"] }[lock.state] || [lock.state, ""];
 
-    root.innerHTML = `<style>${CSS}</style><div class="root">
-<header>
-  <div class="brand"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#12254F"/><rect x="6" y="12" width="4" height="9" rx="1" fill="${DOWN}"/><rect x="12" y="9" width="4" height="9" rx="1" fill="${UP}"/><rect x="18" y="5" width="4" height="11" rx="1" fill="${UP}"/></svg>Bitvavo Bot <small>v${esc(o.version)}</small></div>
+    this.put("r-head", `<div class="brand"><svg aria-hidden="true" width="28" height="28" viewBox="0 0 28 28"><rect width="28" height="28" rx="7" fill="#12254F"/><rect x="6" y="12" width="4" height="9" rx="1" fill="${DOWN}"/><rect x="12" y="9" width="4" height="9" rx="1" fill="${UP}"/><rect x="18" y="5" width="4" height="11" rx="1" fill="${UP}"/></svg>Bitvavo Bot <small>v${esc(o.version)}</small></div>
   <div class="seg" role="group" aria-label="Modus"><button class="${live ? "" : "on"}" data-a="paper">Paper</button><button class="${live ? "on live" : ""}" data-a="live">${lock.state === "op slot" ? `<svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>` : ""}Live · echt geld</button></div>
   <button class="pill ${o.trading ? "ok" : "warn"}" data-a="trading" aria-label="Handel aan of uit">${o.trading ? "● Handel actief" : "❚❚ Handel gepauzeerd"}</button>
-  ${dataPill}${planPill}${b.dagstop ? `<span class="pill bad">Dagstop actief</span>` : ""}
-  <div class="grow"></div>
-  <button class="stop" data-a="stop">Noodstop</button>
-</header>
-${s.error ? `<div class="banner bad">${esc(s.error)} <button class="pill" data-a="dismiss">Sluiten</button></div>` : ""}
-${b.laatste_fout ? `<div class="banner bad">Laatste fout: ${esc(b.laatste_fout)}</div>` : ""}
-${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt opgehaald en het Lab moet eerst draaien. Daarna kiest de bot zelf een strategie en start paper trading.</div>` : ""}
-<section class="kpis">
-  ${kpi(live ? "Resultaat live" : "Resultaat paper", eur(b.resultaat, true), `gerealiseerd ${eur(b.gerealiseerd, true)}`, col(b.resultaat))}
+  ${livePill}${dataPill}${planPill}${b.dagstop ? `<span class="pill bad">Dagstop actief</span>` : ""}
+  <div class="grow"></div><button class="stop" data-a="stop">Noodstop</button>`);
+    this.put("r-ban", `${s.error ? `<div class="banner bad">${esc(s.error)} <button class="pill" data-a="dismiss">Sluiten</button></div>` : ""}${b.laatste_fout ? `<div class="banner bad">Laatste fout: ${esc(b.laatste_fout)}</div>` : ""}${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt opgehaald en het Lab moet eerst draaien. Daarna kiest de bot zelf een strategie en start paper trading.</div>` : ""}`);
+    this.put("r-kpi", `${kpi(live ? "Resultaat live" : "Resultaat paper", eur(b.resultaat, true), `gerealiseerd ${eur(b.gerealiseerd, true)}`, col(b.resultaat))}
   ${kpi("Vandaag", eur(b.vandaag, true), `dagstop bij − ${eur(o.limits.max_day_loss)}`, col(b.vandaag))}
   <div class="card kpi"><div class="l">Ingezet</div><div class="v">${eur(b.ingezet)}</div><div class="bar"><i style="width:${used}%"></i></div><div class="sub" style="margin-top:4px">van max ${eur(o.limits.max_total)}</div></div>
   ${kpi("Open posities", b.open_posities, `${b.open_orders} orders in het boek`)}
   ${kpi("Trades", b.trades, b.winst_pct_trades == null ? "nog geen afgesloten" : `${nf(b.winst_pct_trades, 0)}% winstgevend`)}
-  ${live ? kpi("Saldo Bitvavo", eur(o.balance_eur), "vrij in euro") : kpi("Kopen-en-vasthouden", o.lab.buy_hold_pct == null ? "–" : pct(o.lab.buy_hold_pct, 1), "Lab-periode, ter vergelijking")}
-</section>
-<main>
-<div class="left">
-  <section class="card">
-    <div class="chead"><b>${esc(s.market || "–")}</b><span class="px">${price(sel.price)}</span><span style="font-size:13px;font-weight:600;color:${col(sel.change)}">${sel.change == null ? "" : pct(sel.change * 100) + " 24u"}</span><span class="sub">Signaal: <span style="color:#E7EAEE;font-weight:600">${esc(sel.signal || "–")}</span></span><div class="grow"></div>
-      <div class="tfs">${[["1h", "1u"], ["4h", "4u"], ["1d", "1d"]].map(([k, l]) => `<button class="${s.tf === k ? "on" : ""}" data-a="tf" data-v="${k}">${l}</button>`).join("")}</div></div>
-    <div class="legend" id="legend"></div>
-    <div class="chart"><canvas id="px" role="img" aria-label="Koersgrafiek met candles, hulplijnen en koop- en verkoopmomenten"></canvas></div>
-  </section>
-  <section class="card"><div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${s.tab === k ? "on" : ""}" data-a="tab" data-v="${k}">${l}</button>`).join("")}</div><div class="scroll">${table}</div></section>
-  <section class="card"><div class="row" style="padding:14px 16px 8px"><h2>Resultaat sinds start</h2><span class="sub">${live ? "live" : "paper"} · per uur · na kosten</span></div><div class="eq"><canvas id="eq" role="img" aria-label="Verloop van het resultaat in euro"></canvas></div></section>
-</div>
-<aside>
-  <section class="card"><h2 style="padding:14px 16px 6px">Markten</h2>${o.markets.map((m) => `<button class="mk ${m.market === s.market ? "on" : ""}" data-a="market" data-v="${esc(m.market)}"><span class="n">${esc(m.market)}${m.held ? `<i class="dot" title="positie open"></i>` : ""}</span><span class="p">${price(m.price)}</span><span class="c" style="color:${col(m.change)}">${m.change == null ? "–" : pct(m.change * 100, 1)}</span><span class="s" style="color:${m.signal === "long" || m.signal === "grid" ? "#7FB0FF" : MUTED}">${esc(m.signal)}</span></button>`).join("") || `<div class="empty">Nog geen markten.</div>`}</section>
-  <section class="card pad"><h2>Strategie</h2>
+  ${live ? kpi("Saldo Bitvavo", eur(o.balance_eur), "vrij in euro") : kpi("Kopen-en-vasthouden", o.lab.buy_hold_pct == null ? "–" : pct(o.lab.buy_hold_pct, 1), "Lab-periode, ter vergelijking")}`);
+    this.put("r-chead", `<b>${esc(s.market || "–")}</b><span class="px">${price(sel.price)}</span><span style="font-size:13px;font-weight:600;color:${col(sel.change)}">${sel.change == null ? "" : pct(sel.change * 100) + " 24u"}</span><span class="sub">Signaal: <span style="color:#E7EAEE;font-weight:600">${esc(sel.signal || "–")}</span></span><div class="grow"></div>
+      <div class="tfs">${[["1h", "1u"], ["4h", "4u"], ["1d", "1d"]].map(([k, l]) => `<button class="${s.tf === k ? "on" : ""}" data-a="tf" data-v="${k}">${l}</button>`).join("")}</div>`);
+    this.put("r-table", `<div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${s.tab === k ? "on" : ""}" data-a="tab" data-v="${k}">${l}</button>`).join("")}</div><div class="scroll">${table}</div>`);
+    this.put("r-eqhead", `<h2>Resultaat sinds start</h2><span class="sub">${live ? "live" : "paper"} · per uur · na kosten</span>`);
+    this.put("r-mk", `<h2 style="padding:14px 16px 6px">Markten</h2>${o.markets.map((m) => `<button class="mk ${m.market === s.market ? "on" : ""}" data-a="market" data-v="${esc(m.market)}"><span class="n">${esc(m.market)}${m.held ? `<i class="dot" title="positie open"></i>` : ""}</span><span class="p">${price(m.price)}</span><span class="c" style="color:${col(m.change)}">${m.change == null ? "–" : pct(m.change * 100, 1)}</span><span class="s" style="color:${m.signal === "long" || m.signal === "grid" ? "#7FB0FF" : MUTED}">${esc(m.signal)}</span></button>`).join("") || `<div class="empty">Nog geen markten.</div>`}`);
+    this.put("r-strat", `<h2>Strategie</h2>
     <div class="row"><span>Plan</span><span style="font-weight:600;text-align:right">${plan ? esc(NAMES[plan.strategie] || plan.strategie) + " · " + esc(plan.tijdschaal) : "nog niet gekozen"}</span></div>
     <div class="row"><span>Lab-oordeel</span><span style="font-weight:600;color:${o.lab.oordeel === "kandidaat" ? UP : AMBER}">${esc(o.lab.oordeel)}</span></div>
     <div class="row"><span>Parameters ${esc(s.market || "")}</span><span>${plan ? esc(plan.params[s.market] || "geen (niet instappen)") : "–"}</span></div>
-    <div class="row"><span>Volgende herkeuze</span><span>${plan ? new Date(plan.herkeuze).toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" }) : "–"}</span></div>
-  </section>
-  <section class="card pad"><h2>Risicogrenzen</h2>${LIMITS.map(([k, id, l]) => `<label class="lim">${l}<input type="number" inputmode="decimal" min="5" step="5" value="${o.limits[k]}" data-limit="${id}"></label>`).join("")}</section>
-  <section class="card pad"><div class="row"><h2>Live-slot</h2><span class="pill ${lockState[1]}">${lockState[0]}</span></div>${checks}${lockBtn}</section>
-</aside>
-</main>${this.modalHtml()}</div>`;
-
-    root.querySelectorAll("[data-a]").forEach((el) => el.addEventListener("click", () => this.act(el.dataset.a, el.dataset.v)));
-    root.querySelectorAll("[data-limit]").forEach((el) => el.addEventListener("change", () => { const v = parseFloat(el.value); if (v > 0) this.call("number", "set_value", { entity_id: el.dataset.limit, value: v }); }));
-    const canvas = root.querySelector("#px");
-    if (canvas && this._ro) { this._ro.disconnect(); this._ro.observe(canvas.parentElement); }
-    if (canvas) this.bindChart(canvas);
-    const eq = root.querySelector("#eq");
-    if (eq) {
-      eq.addEventListener("mousemove", (e) => { const r = eq.getBoundingClientRect(); this.eqHover = e.clientX - r.left; this.drawEquity(); });
-      eq.addEventListener("mouseleave", () => { this.eqHover = null; this.drawEquity(); });
-    }
+    <div class="row"><span>Volgende herkeuze</span><span>${plan ? new Date(plan.herkeuze).toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" }) : "–"}</span></div>`);
+    this.put("r-lim", `<h2>Risicogrenzen</h2>${LIMITS.map(([k, id, l]) => `<label class="lim">${l}<input type="number" inputmode="decimal" min="5" step="5" value="${o.limits[k]}" data-limit="${id}"></label>`).join("")}`, true);
+    this.put("r-lock", `<div class="row"><h2>Live-slot</h2><span class="pill ${lockState[1]}">${lockState[0]}</span></div>${checks}${lockBtn}`);
+    this.put("r-modal", this.modalHtml(), true);
     this.renderLegend();
     this.draw();
   }
@@ -273,7 +317,8 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     const el = this.shadowRoot.querySelector("#legend");
     if (!el) return;
     const lines = (this.chart && this.chart.lines) || [];
-    el.innerHTML = lines.map((l, i) => `<span><span style="color:${LINE_COLORS[i % 2]}">━</span> ${esc(l.name)}</span>`).join("") + `<span><span style="color:${UP}">▲</span> koop</span><span><span style="color:${DOWN_TXT}">▼</span> verkoop</span><span class="hint">scrollen = zoomen · slepen = schuiven · dubbelklik = terug</span>`;
+    const html = lines.map((l, i) => `<span><span style="color:${LINE_COLORS[i % 2]}">━</span> ${esc(l.name)}</span>`).join("") + `<span><span style="color:${UP}">▲</span> koop</span><span><span style="color:${DOWN_TXT}">▼</span> verkoop</span><span class="hint">scrollen = zoomen · slepen = schuiven · dubbelklik = terug</span>`;
+    if (this._cache.legend !== html) { el.innerHTML = html; this._cache.legend = html; }
   }
 
   drawEquity() {
@@ -315,7 +360,7 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
 
   bindChart(canvas) {
     const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-    const total = () => ((this.chart && this.chart.bars) || []).length;
+    const total = () => this.liveBars().length;
     const clamp = () => { const t = total(); this.view.n = Math.max(20, Math.min(this.view.n, t || 20)); this.view.off = Math.max(0, Math.min(this.view.off, Math.max(0, t - this.view.n))); };
     canvas.addEventListener("mousemove", (e) => {
       const p = pos(e);
@@ -353,7 +398,7 @@ ${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt o
     g.clearRect(0, 0, W, H);
     const FONT = "11px Inter,Roboto,system-ui,sans-serif", BOLD = "bold 11px Inter,Roboto,system-ui,sans-serif";
     g.font = FONT;
-    const all = (this.chart && this.chart.bars) || [];
+    const all = this.liveBars();
     this._geo = null;
     if (!all.length) { g.fillStyle = MUTED; g.fillText(this.chart ? "Nog geen koersdata voor deze markt." : "Grafiek laden…", 8, 24); return; }
     const v = this.view;

@@ -16,9 +16,14 @@ OPERATOR_ID = 8401  # vaste bot-id die Bitvavo bij elke order verlangt
 class PaperBroker:
     """Vult orders tegen de laatst bekende koers, met dezelfde kosten als de backtest."""
 
-    def __init__(self, prices: dict[str, float], costs: Costs | None = None) -> None:
+    def __init__(
+        self, prices: dict[str, float], costs: Costs | None = None, extremes: dict[str, list[float]] | None = None
+    ) -> None:
         self._prices = prices
         self._costs = costs or Costs()
+        # laagste/hoogste koers sinds de vorige controle (uit de koersstroom), zodat
+        # een korte uitschieter tussen twee controles niet gemist wordt
+        self._extremes = extremes if extremes is not None else {}
 
     async def price(self, market: str) -> float | None:
         return self._prices.get(market)
@@ -47,8 +52,11 @@ class PaperBroker:
 
     async def poll(self, order: dict) -> dict:
         px = self._prices.get(order["market"])
+        low, high = self._extremes.get(order["market"]) or (px, px)
+        if px is not None:
+            low, high = min(low, px), max(high, px)
         # alleen gevuld als de koers strikt dóór de limiet is gegaan (zoals in de backtest)
-        hit = px is not None and (px < order["price"] if order["side"] == "buy" else px > order["price"])
+        hit = px is not None and (low < order["price"] if order["side"] == "buy" else high > order["price"])
         if not hit:
             return {"status": "open", "amount": 0.0}
         quote = order["amount"] * order["price"]

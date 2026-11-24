@@ -19,6 +19,7 @@ def _manager(hass: HomeAssistant):
 def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_overview)
     websocket_api.async_register_command(hass, ws_chart)
+    websocket_api.async_register_command(hass, ws_stream)
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/overview"})
@@ -65,3 +66,21 @@ async def ws_chart(hass, connection, msg) -> None:
         return
     data = await hass.async_add_executor_job(m.trader.chart, msg["market"], msg["timeframe"])
     connection.send_result(msg["id"], data)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/stream"})
+@callback
+def ws_stream(hass, connection, msg) -> None:
+    """Abonnement: het scherm krijgt elke seconde de actuele stand toegestuurd."""
+    m = _manager(hass)
+    if m is None:
+        connection.send_error(msg["id"], "not_loaded", "Bitvavo Bot is niet geladen")
+        return
+
+    @callback
+    def forward(payload: dict) -> None:
+        connection.send_message(websocket_api.event_message(msg["id"], payload))
+
+    connection.subscriptions[msg["id"]] = m.trader.stream_subscribe(forward)
+    connection.send_result(msg["id"])
+    m.trader.push_live()

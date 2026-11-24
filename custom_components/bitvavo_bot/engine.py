@@ -92,7 +92,7 @@ class Engine:
     def pnl(self, prices: dict[str, float]) -> float:
         return self.book["realized"] + self.unrealized(prices)
 
-    def summary(self, prices: dict[str, float]) -> dict:
+    def summary(self, prices: dict[str, float], light: bool = False) -> dict:
         b = self.book
         pnl = self.pnl(prices)
         return {
@@ -110,7 +110,7 @@ class Engine:
             "laatste_fout": b["last_error"],
             "posities": [self._position_row(p, prices) for p in b["positions"]],
             "laatste_trades": b["trades"][-10:][::-1],
-            "verloop": b.get("equity", [])[-720:],
+            **({} if light else {"verloop": b.get("equity", [])[-720:]}),
         }
 
     def _position_row(self, p: dict, prices: dict[str, float]) -> dict:

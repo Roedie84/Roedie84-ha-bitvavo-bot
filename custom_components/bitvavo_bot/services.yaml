@@ -1,0 +1,6 @@
+update_data:
+  name: Data bijwerken
+  description: Haalt ontbrekende uurcandles op bij Bitvavo.
+run_lab:
+  name: Lab draaien
+  description: Draait de walk-forward-toets opnieuw op de opgeslagen data. Plaatst geen orders.

@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Bitvavo Bot",
+        "description": "v0.1 collects price data and tests strategies. No orders are placed and no API key is needed.",
+        "data": {
+          "market_count": "Number of EUR markets (most traded)",
+          "history_days": "History in days"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Bitvavo Bot is already configured."
+    }
+  }
+}

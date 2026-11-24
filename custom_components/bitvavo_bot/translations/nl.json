@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Bitvavo Bot",
+        "description": "v0.1 verzamelt koersdata en toetst strategieën. Er worden geen orders geplaatst en er is geen API-sleutel nodig.",
+        "data": {
+          "market_count": "Aantal EUR-markten (meest verhandeld)",
+          "history_days": "Historie in dagen"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Bitvavo Bot is al ingesteld."
+    }
+  }
+}

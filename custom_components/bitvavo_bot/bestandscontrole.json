@@ -1,0 +1,19 @@
+{
+ "versie": "0.1.0",
+ "bestanden": {
+  "__init__.py": "be8519b95874cfb115cd45fd860dd92f7454b9ca0a7e0814538adfa91156e66f",
+  "api.py": "a44d41b65fa56bafb13ba45fecfcab2638d8ce75d0f410f1bad23ea222ea2576",
+  "config_flow.py": "e909f3bb6e614a88bf9b3c4d18dd2228a921d316434ba65781521df85ba0b125",
+  "const.py": "79dd4103cbaa992e38c2ef8324b0009e5ff66d62c00c7c7a07bba48e72898c1f",
+  "lab.py": "62f92a4e480ccbabff5cb26140ad00a194b0b0efbd87b862d9cd54402522b141",
+  "manager.py": "d410475df4d1a21047bd90346a37f9093775b1b3f6a50bd73d4810c940f2997b",
+  "manifest.json": "22a11bed79a0c639c8069fc50ea58980615c31ce615316df4a8bc778736bcc6b",
+  "sensor.py": "796d4be4acf3fc838b151bc6eb1ed297f815e69ea86a145a9c08beb7a80d980c",
+  "services.yaml": "cd1de4342225d1c23fb17f72782028605e5781292c259c7c845e630a98c6c466",
+  "store.py": "abc000ccf54fdf790196307b5b2f1bc154ff74964352bde3de2196b0c0aa6dfa",
+  "strategies.py": "072ce6e055bd95f26464db644f26e5a93458e57c71b3e4578f950288f0dbb4d3",
+  "strings.json": "10b3aa815cf9efabe1811926ccc7317878512ffcc0fd7e8377513c02e83f62ec",
+  "translations/en.json": "54a9f319770b7c25986cac67e377f59bfea29c82657b1888cb2f4434f8ae7025",
+  "translations/nl.json": "10b3aa815cf9efabe1811926ccc7317878512ffcc0fd7e8377513c02e83f62ec"
+ }
+}

@@ -14,5 +14,11 @@ def no_real_stream():
     async def idle(self):
         return None
 
-    with patch("custom_components.bitvavo_bot.stream.BitvavoStream.run", idle):
+    async def no_prices(self):
+        return {}
+
+    with (
+        patch("custom_components.bitvavo_bot.stream.BitvavoStream.run", idle),
+        patch("custom_components.bitvavo_bot.api.BitvavoPublicClient.ticker_prices", no_prices),
+    ):
         yield

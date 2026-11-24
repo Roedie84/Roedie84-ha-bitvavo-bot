@@ -42,12 +42,12 @@ async def test_flow_setup_download_lab_and_unload(hass: HomeAssistant, tmp_path)
         assert data.state == "gereed"
         assert data.attributes["markten"] == ["BTC-EUR", "ETH-EUR", "SOL-EUR"]
         total = data.attributes["candles"]
-        assert 3 * 24 * 400 - 3 <= total <= 3 * 24 * 400
+        assert 3 * 24 * 420 - 3 <= total <= 3 * 24 * 420
         assert entry.data["markets"] == ["BTC-EUR", "ETH-EUR", "SOL-EUR"]
 
         verdict = hass.states.get("sensor.bitvavo_bot_lab_oordeel")
         assert verdict.state in ("geen edge", "kandidaat")
-        assert len(verdict.attributes["resultaten"]) == 12
+        assert len(verdict.attributes["resultaten"]) == 17
         assert (tmp_path / "bitvavo_bot" / "lab_report.json").exists()
         assert hass.states.get("sensor.bitvavo_bot_beste_netto_per_trade") is not None
 

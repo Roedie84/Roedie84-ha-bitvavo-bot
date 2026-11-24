@@ -1,7 +1,7 @@
 """Constanten voor Bitvavo Bot."""
 
 DOMAIN = "bitvavo_bot"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 API_BASE = "https://api.bitvavo.com/v2"
 CANDLE_INTERVAL = "1h"
@@ -13,7 +13,8 @@ CONF_HISTORY_DAYS = "history_days"
 CONF_MARKETS = "markets"
 
 DEFAULT_MARKET_COUNT = 10
-DEFAULT_HISTORY_DAYS = 730
+DEFAULT_HISTORY_DAYS = 1460
+MIN_HISTORY_DAYS = 1460  # preregistratie v2 toetst op 4 jaar
 
 # Geen stablecoins/fiat-achtigen in het universum: daar valt niets te verdienen.
 EXCLUDED_BASES = frozenset(

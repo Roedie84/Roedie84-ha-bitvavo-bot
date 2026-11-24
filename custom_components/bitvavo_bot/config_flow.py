@@ -29,7 +29,7 @@ class BitvavoBotConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Coerce(int), vol.Range(min=3, max=25)
                 ),
                 vol.Required(CONF_HISTORY_DAYS, default=DEFAULT_HISTORY_DAYS): vol.All(
-                    vol.Coerce(int), vol.Range(min=365, max=1460)
+                    vol.Coerce(int), vol.Range(min=365, max=2190)
                 ),
             }
         )

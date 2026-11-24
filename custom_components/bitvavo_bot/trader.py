@@ -16,8 +16,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import BitvavoError, BitvavoPrivateClient
 from .brokers import LiveBroker, PaperBroker
 from .engine import BrokerError, Engine, Limits, new_book
-from .lab import DAY_MS, TIMEFRAMES, closed_bars, select_params
-from .strategies import live_target, param_specs, sma, ema
+from .lab import DAY_MS, TIMEFRAMES, Context, closed_bars, select_params
+from .strategies import compute_target, ema, param_specs, sma
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,6 +112,13 @@ class Trader:
             return
         now = int(time.time() * 1000)
         plan = self.plan
+        # Een onbewezen plan maakt plaats zodra het Lab wél een kandidaat heeft.
+        if plan and not force and report.get("kandidaten"):
+            if f"{plan['strategie']} {plan['tijdschaal']}" not in report["kandidaten"]:
+                for e in self.engines():
+                    await e.flatten()
+                    e.book["last_bar"] = {}
+                plan = None
         if plan is None or force:
             pick = None
             for row in report.get("resultaten", []):
@@ -157,14 +164,20 @@ class Trader:
         specs = param_specs()[strat]
 
         def _prepare() -> dict:
+            data = self.m.load_all_candles()
+            ctx = Context(data)
             out = {}
             for market in self.m.markets:
-                hour = self.m.store.load_candles(market)
+                hour = data.get(market)
                 if not hour:
                     continue
                 bars = closed_bars(hour, factor)
                 kwargs = specs.get(plan["params"].get(market) or "")
-                target = live_target(strat, kwargs, bars) if kwargs and strat != "grid" else None
+                target = (
+                    compute_target(strat, kwargs, market, bars, ctx, factor * 3_600_000)
+                    if kwargs and strat != "grid"
+                    else None
+                )
                 change = hour[-1][4] / hour[-25][4] - 1 if len(hour) > 25 else None
                 out[market] = (bars, kwargs, target, change)
             return out
@@ -373,7 +386,7 @@ class Trader:
                 lines = [(f"SMA {kw['trend_n']}", sma(closes, kw["trend_n"]))]
             elif kw and plan["strategie"] == "grid":
                 lines = [(f"SMA {kw['ref_n']}", sma(closes, kw["ref_n"]))]
-            elif kw and plan["strategie"] == "donchian":
+            elif kw and plan["strategie"] in ("donchian", "donchian_regime"):
                 highs = [b[2] for b in bars]
                 n = kw["entry_n"]
                 lines = [(f"Hoogste {n}", [max(highs[i - n : i]) if i >= n else None for i in range(len(bars))])]

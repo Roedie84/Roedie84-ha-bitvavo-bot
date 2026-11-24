@@ -17,7 +17,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
-from .strategies import STRATEGY_LABELS, Bar, Costs, Trade, param_grid
+from bisect import bisect_right
+
+from .strategies import HYPOTHESES, POOLED, STRATEGY_LABELS, Bar, Costs, Trade, param_specs, run_strategy
 
 DAY_MS = 86_400_000
 WEEK_MS = 7 * DAY_MS
@@ -107,25 +109,102 @@ def closed_bars(hour_bars: Sequence[Bar], factor: int, base_ms: int = 3_600_000)
     return out
 
 
+PREREG = "v2"
+REGIME_MARKET = "BTC-EUR"
+REGIME_DAYS = 200
+TOP_N = 3
+MONDAY_OFFSET = 4 * DAY_MS  # 1-1-1970 was een donderdag
+
+
+class Context:
+    """Wat een strategie over markten heen mag weten, zonder vooruit te kijken:
+    elk antwoord op tijdstip t gebruikt alleen dagbars die op t al gesloten waren."""
+
+    def __init__(self, data: Mapping[str, Sequence[Bar]]) -> None:
+        self._daily = {m: resample(b, 24) for m, b in data.items() if b}
+        self._regime_t: list[int] = []
+        self._regime_v: list[bool] = []
+        btc = self._daily.get(REGIME_MARKET) or []
+        closes = [b[4] for b in btc]
+        total = 0.0
+        for i, bar in enumerate(btc):
+            total += closes[i]
+            if i >= REGIME_DAYS:
+                total -= closes[i - REGIME_DAYS]
+            if i >= REGIME_DAYS - 1:
+                self._regime_t.append(bar[0] + DAY_MS)  # bekend zodra deze dag gesloten is
+                self._regime_v.append(closes[i] > total / REGIME_DAYS)
+        self._close_at = {m: {b[0] + DAY_MS: b[4] for b in bars} for m, bars in self._daily.items()}
+        self._rank: dict[int, tuple[list[int], list[frozenset]]] = {}
+
+    def regime_at(self, t_ms: int) -> bool:
+        i = bisect_right(self._regime_t, t_ms) - 1
+        return i >= 0 and self._regime_v[i]
+
+    def _ranking(self, lookback: int) -> tuple[list[int], list[frozenset]]:
+        if lookback not in self._rank:
+            times = [t for closes in self._close_at.values() for t in closes]
+            weeks, picks = [], []
+            if times:
+                w = min(times)
+                w += (MONDAY_OFFSET - w) % WEEK_MS  # eerste maandag 00:00 UTC
+                while w <= max(times):
+                    scores = []
+                    for market, closes in self._close_at.items():
+                        now, then = closes.get(w), closes.get(w - lookback * DAY_MS)
+                        if now and then:
+                            scores.append((now / then - 1, market))
+                    scores.sort(reverse=True)
+                    weeks.append(w)
+                    picks.append(frozenset(m for _, m in scores[:TOP_N]))
+                    w += WEEK_MS
+            self._rank[lookback] = (weeks, picks)
+        return self._rank[lookback]
+
+    def is_selected(self, market: str, lookback: int, t_ms: int) -> bool:
+        weeks, picks = self._ranking(lookback)
+        i = bisect_right(weeks, t_ms) - 1
+        return i >= 0 and market in picks[i]
+
+
+def _eligible(bars: Sequence[Bar], cfg: LabConfig) -> bool:
+    """Genoeg historie voor minstens één volledig venster (train + test)."""
+    return len(bars) >= 300 and bars[-1][0] - bars[0][0] >= (cfg.train_days + cfg.test_days) * DAY_MS
+
+
 def select_params(
     data: Mapping[str, Sequence[Bar]], strategy: str, timeframe: str, cfg: LabConfig | None = None
 ) -> dict[str, str | None]:
-    """Kies per markt de parameterset voor de komende periode, exact zoals de
-    walk-forward dat doet: beste op de laatste train_days, anders niet handelen."""
+    """Kies de parameterset voor de komende periode, exact zoals de walk-forward
+    dat doet: beste op de laatste train_days, anders niet handelen. Te jonge
+    markten doen niet mee."""
     cfg = cfg or LabConfig()
-    params = param_grid()[strategy]
-    out: dict[str, str | None] = {}
-    for market, hour_bars in data.items():
-        bars = closed_bars(hour_bars, TIMEFRAMES[timeframe])
-        # te jonge markt: minder historie dan één volledig venster (train + test)
-        min_span = (cfg.train_days + cfg.test_days) * DAY_MS
-        if len(bars) < 300 or bars[-1][0] - bars[0][0] < min_span:
-            out[market] = None
-            continue
-        end = bars[-1][0]
-        fold = [(end - cfg.train_days * DAY_MS, end, end + cfg.test_days * DAY_MS)]
-        per_param = {name: run(bars, cfg.costs) for name, run in params.items()}
-        _, chosen = walk_forward(per_param, fold, cfg)
+    specs = param_specs()[strategy]
+    factor = TIMEFRAMES[timeframe]
+    tf_ms = factor * 3_600_000
+    ctx = Context(data)
+    out: dict[str, str | None] = {m: None for m in data}
+    tf_bars = {m: closed_bars(b, factor) for m, b in data.items()}
+    tf_bars = {m: b for m, b in tf_bars.items() if _eligible(b, cfg)}
+    if not tf_bars:
+        return out
+
+    def fold_for(end: int):
+        return [(end - cfg.train_days * DAY_MS, end, end + cfg.test_days * DAY_MS)]
+
+    if strategy in POOLED:
+        per_param: dict[str, list[Trade]] = {name: [] for name in specs}
+        for market, bars in tf_bars.items():
+            for name, kw in specs.items():
+                per_param[name] += run_strategy(strategy, kw, market, bars, ctx, tf_ms, cfg.costs)
+        _, chosen = walk_forward(per_param, fold_for(max(b[-1][0] for b in tf_bars.values())), cfg)
+        pick = next(iter(chosen), None)
+        for market in tf_bars:
+            out[market] = pick
+        return out
+    for market, bars in tf_bars.items():
+        per_param = {name: run_strategy(strategy, kw, market, bars, ctx, tf_ms, cfg.costs) for name, kw in specs.items()}
+        _, chosen = walk_forward(per_param, fold_for(bars[-1][0]), cfg)
         out[market] = next(iter(chosen), None)
     return out
 
@@ -189,43 +268,66 @@ def _compound(trades: Sequence[Trade]) -> float:
 def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> dict:
     """Draai het volledige Lab. data: markt -> uurbars (oplopend)."""
     cfg = cfg or LabConfig()
-    grid = param_grid()
-    n_hyp = len(grid) * len(TIMEFRAMES)
+    specs = param_specs()
+    n_hyp = sum(len(tfs) for _, tfs, _, _ in HYPOTHESES)
     alpha_corr = cfg.alpha / n_hyp
     data = {m: b for m, b in data.items() if len(b) > 0}
+    ctx = Context(data)
     results: list[dict] = []
     bh_all: list[float] = []
     oos_range: list[int] = []
+    tf_cache: dict[str, dict[str, list[Bar]]] = {}
+    first = True
 
-    for tf, factor in TIMEFRAMES.items():
-        tf_bars = {m: resample(b, factor) for m, b in data.items()}
-        for strat, params in grid.items():
+    for strat, timeframes, is_pooled, prereg in HYPOTHESES:
+        params = specs[strat]
+        for tf in timeframes:
+            factor = TIMEFRAMES[tf]
+            tf_ms = factor * 3_600_000
+            if tf not in tf_cache:
+                tf_cache[tf] = {m: resample(b, factor) for m, b in data.items()}
+            usable = {m: b for m, b in tf_cache[tf].items() if len(b) >= 300 and folds(b[0][0], b[-1][0], cfg)}
             pooled: list[Trade] = []
             pooled_excess: list[float] = []
-            per_market_mean: dict[str, float] = {}
-            per_market_total: list[float] = []
             chosen_all: dict[str, int] = {}
-            for market, bars in tf_bars.items():
-                if len(bars) < 300:
-                    continue
+            drifts: dict[str, float] = {}
+            for market, bars in usable.items():
                 fl = folds(bars[0][0], bars[-1][0], cfg)
-                if not fl:
-                    continue
-                per_param = {name: run(bars, cfg.costs) for name, run in params.items()}
-                oos, chosen = walk_forward(per_param, fl, cfg)
-                for k, v in chosen.items():
-                    chosen_all[k] = chosen_all.get(k, 0) + v
-                if oos:
-                    per_market_mean[market] = _mean([t.net for t in oos])
-                    per_market_total.append(_compound(oos))
-                drift = market_drift(data[market], fl[0][1], fl[-1][2])
-                pooled.extend(oos)
-                pooled_excess.extend(excess(t, drift) for t in oos)
-                if tf == "1h" and strat == next(iter(grid)):
+                drifts[market] = market_drift(data[market], fl[0][1], fl[-1][2])
+                if first:
                     bh = buy_hold(data[market], fl[0][1], fl[-1][2], cfg.costs)
                     if bh is not None:
                         bh_all.append(bh)
                     oos_range += [fl[0][1], fl[-1][2]]
+            first = False
+
+            if is_pooled and usable:
+                # één keuze voor alle markten samen (de strategie kiest zelf tussen markten)
+                per_param: dict[str, list[Trade]] = {name: [] for name in params}
+                for market, bars in usable.items():
+                    for name, kw in params.items():
+                        per_param[name] += run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs)
+                start = min(b[0][0] for b in usable.values())
+                end = max(b[-1][0] for b in usable.values())
+                pooled, chosen_all = walk_forward(per_param, folds(start, end, cfg), cfg)
+            else:
+                for market, bars in usable.items():
+                    per_param = {
+                        name: run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs)
+                        for name, kw in params.items()
+                    }
+                    oos, chosen = walk_forward(per_param, folds(bars[0][0], bars[-1][0], cfg), cfg)
+                    for k, v in chosen.items():
+                        chosen_all[k] = chosen_all.get(k, 0) + v
+                    pooled.extend(oos)
+
+            pooled = sorted(pooled, key=lambda t: t.entry_ts)
+            pooled_excess = [excess(t, drifts.get(t.market, 0.0)) for t in pooled]
+            by_market: dict[str, list[Trade]] = {}
+            for t in pooled:
+                by_market.setdefault(t.market, []).append(t)
+            per_market_mean = {m: _mean([t.net for t in ts]) for m, ts in by_market.items()}
+            per_market_total = [_compound(ts) for ts in by_market.values()]
 
             nets = [t.net for t in pooled]
             weeks = weekly_means(pooled, pooled_excess)
@@ -237,7 +339,6 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
                 if per_market_mean
                 else 0.0
             )
-            pooled.sort(key=lambda t: t.entry_ts)
             half = len(pooled) // 2
             h1, h2 = _mean([t.net for t in pooled[:half]]), _mean([t.net for t in pooled[half:]])
             checks = {
@@ -254,6 +355,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
                     "strategie": strat,
                     "naam": STRATEGY_LABELS.get(strat, strat),
                     "tijdschaal": tf,
+                    "versie": prereg,
                     "trades": len(nets),
                     "netto_pct": round(mean_net * 100, 3),
                     "alpha_pct": round(mean_alpha * 100, 3),
@@ -276,7 +378,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
     ]
     best = with_trades[0] if with_trades else None
     return {
-        "preregistratie": "v1",
+        "preregistratie": PREREG,
         "markten": sorted(data),
         "hypotheses": n_hyp,
         "alpha_gecorrigeerd": round(alpha_corr, 5),

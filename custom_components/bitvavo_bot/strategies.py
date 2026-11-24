@@ -31,6 +31,7 @@ class Trade:
     exit_ts: int
     net: float  # netto rendement van deze trade na kosten (fractie)
     weight: float = 1.0  # deel van het kapitaal (grid: 1/levels)
+    market: str = ""
 
 
 # ---------------------------------------------------------------- indicatoren
@@ -135,6 +136,65 @@ def target_rsi_dip(
                 pos = 0
         target[i] = pos
     return target
+
+
+def target_donchian_regime(
+    bars: Sequence[Bar], entry_n: int, exit_n: int, regime: Callable[[int], bool], tf_ms: int
+) -> list[int]:
+    """Donchian-uitbraak, maar alleen instappen als de markt als geheel meewerkt
+    (regime(t) = BTC boven zijn 200-daags gemiddelde op tijdstip t)."""
+    highs = [b[2] for b in bars]
+    lows = [b[3] for b in bars]
+    target = [0] * len(bars)
+    pos = 0
+    for i in range(len(bars)):
+        close = bars[i][4]
+        if not pos and i >= entry_n and close > max(highs[i - entry_n : i]) and regime(bars[i][0] + tf_ms):
+            pos = 1
+        elif pos and i >= exit_n and close < min(lows[i - exit_n : i]):
+            pos = 0
+        target[i] = pos
+    return target
+
+
+def target_vol_breakout(bars: Sequence[Bar], n: int, k: float, m: float) -> list[int]:
+    """Volatiliteitsuitbraak: koop als de slotkoers meer dan k x de gemiddelde
+    beweging (over n bars) stijgt; verkoop onder de top sinds instap min m x die beweging."""
+    closes = [b[4] for b in bars]
+    moves = [0.0] + [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    avg = sma(moves, n)
+    target = [0] * len(bars)
+    pos = 0
+    peak = 0.0
+    for i in range(1, len(bars)):
+        a_prev, a_now = avg[i - 1], avg[i]
+        if a_prev is None or a_now is None:
+            continue
+        if not pos:
+            if closes[i] - closes[i - 1] > k * a_prev:
+                pos, peak = 1, closes[i]
+        else:
+            peak = max(peak, closes[i])
+            if closes[i] < peak - m * a_now:
+                pos = 0
+        target[i] = pos
+    return target
+
+
+def target_rel_strength(
+    bars: Sequence[Bar],
+    lookback: int,
+    selected: Callable[[int, int], bool],
+    regime: Callable[[int], bool],
+    tf_ms: int,
+) -> list[int]:
+    """Relatieve sterkte: long zolang deze markt bij de sterkste hoort (wekelijkse
+    ranglijst over lookback dagen) en de markt als geheel meewerkt."""
+    out = []
+    for b in bars:
+        t = b[0] + tf_ms
+        out.append(1 if regime(t) and selected(lookback, t) else 0)
+    return out
 
 
 def simulate_signals(bars: Sequence[Bar], target: Sequence[int], costs: Costs) -> list[Trade]:
@@ -247,25 +307,56 @@ def param_specs() -> dict[str, dict[str, dict]]:
             for s in (0.02, 0.03, 0.05)
             for lv in (3, 5)
         },
+        # ---- preregistratie v2 ----
+        "rel_strength": {f"{n} dagen": {"lookback": n} for n in (30, 60, 90)},
+        "donchian_regime": {
+            f"in{e}/uit{x}": {"entry_n": e, "exit_n": x} for e in (20, 55, 100) for x in (10, 20)
+        },
+        "vol_breakout": {
+            f"k{k} stop{m}": {"n": 20, "k": k, "m": float(m)} for k in (1.5, 2.0, 2.5) for m in (2, 3)
+        },
     }
 
 
-def make_runner(strategy: str, kwargs: dict) -> Runner:
+# (strategie, tijdschalen, gepoold kiezen, preregistratie-versie)
+HYPOTHESES: tuple[tuple[str, tuple[str, ...], bool, str], ...] = (
+    ("donchian", ("1h", "4h", "1d"), False, "v1"),
+    ("ema_cross", ("1h", "4h", "1d"), False, "v1"),
+    ("rsi_dip", ("1h", "4h", "1d"), False, "v1"),
+    ("grid", ("1h", "4h", "1d"), False, "v1"),
+    ("rel_strength", ("1d",), True, "v2"),
+    ("donchian_regime", ("4h", "1d"), False, "v2"),
+    ("vol_breakout", ("4h", "1d"), False, "v2"),
+)
+POOLED = {h[0] for h in HYPOTHESES if h[2]}
+
+
+def compute_target(strategy: str, kwargs: dict, market: str, bars: Sequence[Bar], ctx, tf_ms: int) -> list[int]:
+    """Doelpositie per bar. Eén functie voor backtest én live, zodat ze nooit uiteenlopen.
+    ctx levert wat over markten heen nodig is (marktregime, ranglijst)."""
+    if strategy == "donchian_regime":
+        return target_donchian_regime(bars, regime=ctx.regime_at, tf_ms=tf_ms, **kwargs)
+    if strategy == "vol_breakout":
+        return target_vol_breakout(bars, **kwargs)
+    if strategy == "rel_strength":
+        return target_rel_strength(
+            bars, kwargs["lookback"], lambda n, t: ctx.is_selected(market, n, t), ctx.regime_at, tf_ms
+        )
+    return TARGETS[strategy](bars, **kwargs)
+
+
+def run_strategy(
+    strategy: str, kwargs: dict, market: str, bars: Sequence[Bar], ctx, tf_ms: int, costs: Costs
+) -> list[Trade]:
     if strategy == "grid":
-        return lambda bars, costs: simulate_grid(bars, costs=costs, **kwargs)
-    fn = TARGETS[strategy]
-    return lambda bars, costs: simulate_signals(bars, fn(bars, **kwargs), costs)
-
-
-def param_grid() -> dict[str, dict[str, Runner]]:
-    return {
-        strat: {name: make_runner(strat, kw) for name, kw in params.items()}
-        for strat, params in param_specs().items()
-    }
+        trades = simulate_grid(bars, costs=costs, **kwargs)
+    else:
+        trades = simulate_signals(bars, compute_target(strategy, kwargs, market, bars, ctx, tf_ms), costs)
+    return [Trade(t.entry_ts, t.exit_ts, t.net, t.weight, market) for t in trades]
 
 
 def live_target(strategy: str, kwargs: dict, bars: Sequence[Bar]) -> list[int]:
-    """Doelpositie per bar voor een signaalstrategie (zelfde code als de backtest)."""
+    """Doelpositie voor de v1-signaalstrategieën (geen context nodig)."""
     return TARGETS[strategy](bars, **kwargs)
 
 
@@ -274,4 +365,7 @@ STRATEGY_LABELS = {
     "ema_cross": "Trend – EMA-kruising",
     "rsi_dip": "Mean-reversion – RSI-dip",
     "grid": "Grid rond gemiddelde",
+    "rel_strength": "Relatieve sterkte (top 3, wekelijks)",
+    "donchian_regime": "Trend – Donchian met marktfilter",
+    "vol_breakout": "Volatiliteitsuitbraak",
 }

@@ -53,3 +53,63 @@ ingebouwd patroon slaat de toets wél aan.
 ## Wat een "kandidaat" betekent
 Niet: bewezen winstgevend. Wel: goed genoeg om in v0.2 met gesimuleerde orders
 op live koersen te volgen. Pas als dat de backtest bevestigt komt echt geld in beeld.
+
+---
+
+# Uitslag v1 (24-11-2026, 2 jaar data, 10 markten)
+
+**Geen edge.** Geen van de 12 hypotheses haalde de drempel. Kopen-en-vasthouden
+over dezelfde periode: −19,0%.
+
+| Hypothese | Trades | Netto/trade | Alpha | p |
+|---|---|---|---|---|
+| grid 1h (beste met genoeg trades) | 501 | +0,048% | +0,021% | 0,201 |
+| rsi_dip 1d | 7 | +3,187% | +2,164% | 0,069 (te weinig trades) |
+| donchian 4h | 117 | −0,302% | −0,552% | 0,847 |
+| ema_cross 1h | 130 | −0,360% | −0,590% | 0,527 |
+| ema_cross 4h | 92 | −0,397% | −0,652% | 0,689 |
+| donchian 1h | 341 | −0,439% | −0,457% | 0,965 |
+| grid 4h | 389 | −0,502% | −0,612% | 0,307 |
+| rsi_dip 1h | 169 | −0,520% | −0,553% | 1,000 |
+| rsi_dip 4h | 131 | −0,677% | −0,765% | 0,944 |
+| grid 1d | 252 | −2,290% | −2,377% | 0,384 |
+| donchian 1d, ema_cross 1d | 0 | – | – | – |
+
+Het volledige rapport blijft bewaard als `config/bitvavo_bot/lab_report_v1.json`.
+
+# Preregistratie v2 – vastgelegd op 24-11-2026, vóór de eerste run
+
+Aanleiding: per markt los handelen op trend of terugkeer verliest na kosten.
+v2 zoekt in een andere hoek: minder trades, en alleen handelen als de markt als
+geheel meewerkt. Dit is de laatste ronde: komt hier weer "geen edge" uit, dan
+volgt geen v3 op dezelfde data, want elke extra ronde vergroot de kans op een
+toevalstreffer.
+
+## Wat verandert
+- **Data:** 4 jaar uurcandles in plaats van 2 (meer waarnemingen voor regels
+  die zelden handelen). De v1-hypotheses worden op dezelfde 4 jaar opnieuw
+  gerapporteerd; hun v1-uitslag hierboven blijft staan.
+- **Correctie:** de drempel telt alle 17 hypotheses (12 + 5): p < 0,05 / 17 = 0,0029.
+- **Marktregime:** "aan" als de dagslotkoers van BTC-EUR boven zijn 200-daags
+  gemiddelde ligt. Gebruikt alleen dagen die op het beslismoment gesloten zijn.
+- Alle overige eisen (zeven voorwaarden, walk-forward 180/60, kosten) blijven gelijk.
+
+## Nieuwe hypotheses (5)
+| Strategie | Regel | Parametersets | Tijdschaal |
+|---|---|---|---|
+| rel_strength | Elke maandag 00:00 UTC de 3 markten met het hoogste rendement over N dagen; long zolang de markt in die top 3 staat én het regime aan is | N 30/60/90 | 1d |
+| donchian_regime | Donchian-uitbraak (als v1), instappen alleen als het regime aan is; uitstappen volgens de Donchian-regel | N 20/55/100 × M 10/20 | 4h, 1d |
+| vol_breakout | Koop als de slotkoers meer dan k × de gemiddelde absolute beweging van 20 bars stijgt; verkoop onder de hoogste slotkoers sinds instap min m × die beweging | k 1,5/2/2,5 × m 2/3 | 4h, 1d |
+
+Bij rel_strength wordt N voor alle markten samen gekozen (de strategie kiest
+zelf tussen markten); bij de andere twee per markt, zoals in v1.
+
+## Controle van de toets zelf
+Op synthetische data zonder patroon (24 universums van 10 markten × 4 jaar:
+zijwaarts, sterk stijgend, dalend) kwam 0× een vals "kandidaat", bij gemiddeld
+1.300–2.800 v2-trades per universum.
+
+## Wat er daarna gebeurt
+- Kandidaat: de bot stapt automatisch over op die strategie (paper begint
+  opnieuw te tellen voor het slot).
+- Geen kandidaat: het huidige paper-plan loopt door en het slot blijft dicht.

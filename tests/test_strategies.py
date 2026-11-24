@@ -5,7 +5,9 @@ import pytest
 from custom_components.bitvavo_bot.strategies import (
     Costs,
     ema,
-    param_grid,
+    param_specs,
+    run_strategy,
+    target_vol_breakout,
     rsi,
     simulate_grid,
     simulate_signals,
@@ -92,11 +94,27 @@ def test_grid_needs_strict_penetration():
     assert simulate_grid(flat + [touch], 50, 0.02, 1, 200, Costs()) == []
 
 
-def test_param_grid_is_the_preregistered_one():
-    g = param_grid()
-    assert {k: len(v) for k, v in g.items()} == {"donchian": 6, "ema_cross": 4, "rsi_dip": 6, "grid": 6}
+def test_param_specs_are_the_preregistered_ones():
+    from custom_components.bitvavo_bot.lab import Context
+
+    g = param_specs()
+    assert {k: len(v) for k, v in g.items()} == {
+        "donchian": 6, "ema_cross": 4, "rsi_dip": 6, "grid": 6,
+        "rel_strength": 3, "donchian_regime": 6, "vol_breakout": 6,
+    }
     bars = make_bars(1500, seed=9, vol=0.015)
-    for params in g.values():
-        for run in params.values():
-            for t in run(bars, Costs()):
-                assert t.exit_ts >= t.entry_ts and math.isfinite(t.net)
+    ctx = Context({"BTC-EUR": bars, "X-EUR": bars})
+    for strat, params in g.items():
+        for kw in params.values():
+            for t in run_strategy(strat, kw, "X-EUR", bars, ctx, H, Costs()):
+                assert t.exit_ts >= t.entry_ts and math.isfinite(t.net) and t.market == "X-EUR"
+
+
+def test_vol_breakout_enters_on_big_move_and_trails():
+    bars = [(i * H, 100.0, 100.5, 99.5, 100.0 + (i % 2) * 0.2, 1.0) for i in range(40)]
+    bars.append((40 * H, 100.0, 104.0, 100.0, 104.0, 1.0))  # sprong ver boven de normale beweging
+    bars += [(i * H, 104.0, 104.5, 103.5, 104.0, 1.0) for i in range(41, 45)]
+    bars.append((45 * H, 104.0, 104.0, 96.0, 96.0, 1.0))  # val onder de meelopende stop
+    t = target_vol_breakout(bars, n=20, k=2.0, m=2.0)
+    assert t[39] == 0 and t[40] == 1 and t[44] == 1 and t[45] == 0
+    assert target_vol_breakout(bars[:43], n=20, k=2.0, m=2.0) == t[:43]  # geen vooruitkijken

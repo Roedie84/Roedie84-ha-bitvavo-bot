@@ -22,6 +22,7 @@ from .const import (
     DATA_DIR,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_MARKET_COUNT,
+    MIN_HISTORY_DAYS,
     DOMAIN,
     SIGNAL_UPDATE,
     STATUS_DOWNLOADING,
@@ -30,7 +31,7 @@ from .const import (
     VERDICT_NONE,
     VERDICT_RUNNING,
 )
-from .lab import run_lab
+from .lab import PREREG, run_lab
 from .store import Store
 from .trader import Trader
 
@@ -90,7 +91,8 @@ class BitvavoBotManager:
         await self._refresh_coverage()
         self._notify()
         await self.async_update_data()
-        if self.report is None and self.status == STATUS_IDLE and self.total_candles:
+        stale = self.report is None or self.report.get("preregistratie") != PREREG
+        if stale and self.status == STATUS_IDLE and self.total_candles:
             await self.async_run_lab()
         await self.async_trade_cycle()
 
@@ -137,19 +139,26 @@ class BitvavoBotManager:
                     self.hass.config_entries.async_update_entry(
                         self.entry, data={**self.entry.data, CONF_MARKETS: self.markets}
                     )
-                days = int(self.entry.data.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS))
+                days = max(int(self.entry.data.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)), MIN_HISTORY_DAYS)
                 now_ms = int(time.time() * 1000)
                 floor_ms = now_ms - days * 86_400_000
+                meta = await self.hass.async_add_executor_job(self.store.load_json, "meta.json") or {}
+                filled = meta.setdefault("historie_dagen", {})
                 for idx, market in enumerate(self.markets, 1):
                     self.progress = f"{market} ({idx}/{len(self.markets)})"
                     self._notify()
                     existing = await self.hass.async_add_executor_job(self.store.load_candles, market)
+                    rows: list = []
+                    # oudere historie bijhalen (eenmalig per markt, bv. bij de stap van 2 naar 4 jaar)
+                    if existing and filled.get(market, 0) < days and int(existing[0][0]) > floor_ms + CANDLE_MS:
+                        rows += await self.client.candles(market, floor_ms, int(existing[0][0]))
                     since = int(existing[-1][0]) + CANDLE_MS if existing else floor_ms
-                    if since + CANDLE_MS > now_ms:
-                        continue
-                    rows = await self.client.candles(market, since, now_ms)
+                    if since + CANDLE_MS <= now_ms:
+                        rows += await self.client.candles(market, since, now_ms)
                     if rows:
                         await self.hass.async_add_executor_job(self.store.merge_candles, market, rows)
+                    filled[market] = days
+                await self.hass.async_add_executor_job(self.store.save_json, "meta.json", meta)
                 self.status = STATUS_IDLE
             except BitvavoError as err:
                 _LOGGER.warning("Bitvavo-data ophalen mislukt: %s", err)
@@ -172,6 +181,10 @@ class BitvavoBotManager:
                 data = {
                     m: [tuple(r) for r in self.store.load_candles(m)] for m in self.markets
                 }
+                old = self.store.load_report()
+                if old and old.get("preregistratie") != PREREG:
+                    # de uitslag van een eerdere preregistratie blijft bewaard
+                    self.store.save_json(f"lab_report_{old.get('preregistratie', 'oud')}.json", old)
                 report = run_lab(data)
                 report["gedraaid_op"] = datetime.now(timezone.utc).isoformat()
                 report["oos_van"] = _iso(report.get("oos_van"))

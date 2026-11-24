@@ -147,7 +147,7 @@ async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_pa
         assert [m["market"] for m in o["markets"]] == list(NAMES)
         assert all(m["price"] and m["change"] is not None for m in o["markets"])
         assert o["book"]["gerealiseerd"] == 3.21 and o["limits"]["max_total"] == 500
-        assert len(o["lab"]["resultaten"]) == 12 and o["plan"]["strategie"] == plan["strategie"]
+        assert len(o["lab"]["resultaten"]) == 17 and o["plan"]["strategie"] == plan["strategie"]
         await ws.send_json({"id": 2, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": plan["tijdschaal"]})
         c = (await ws.receive_json())["result"]
         assert 100 < len(c["bars"]) <= 160 and len(c["bars"][0]) == 6
@@ -164,3 +164,55 @@ async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_pa
         assert t2.paper.book["realized"] == 3.21 and t2.paper.book["trade_count"] == 4
         assert t2.paper.book["started"] == started and t2.limits.max_total == 500
         assert t2.plan["strategie"] == plan["strategie"] and t2.plan["selected_at"] == plan["selected_at"]
+
+
+async def test_upgrade_backfills_history_reruns_lab_and_keeps_old_verdict(hass: HomeAssistant, tmp_path):
+    """Situatie na een update: 100 dagen data op schijf en een v1-rapport."""
+    import gzip
+
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now) as series:
+        base = tmp_path / "bitvavo_bot" / "candles"
+        base.mkdir(parents=True)
+        for m, rows in series.items():
+            with gzip.open(base / f"{m}_1h.json.gz", "wt") as fh:
+                json.dump(rows[-24 * 100 : -5], fh)
+        (tmp_path / "bitvavo_bot" / "lab_report.json").write_text(
+            json.dumps({"preregistratie": "v1", "oordeel": "geen edge", "beste": "grid 1h", "kandidaten": [], "resultaten": []})
+        )
+        hass.config.config_dir = str(tmp_path)
+        from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+        entry = MockConfigEntry(domain=DOMAIN, data={"market_count": 3, "history_days": 730, "markets": list(NAMES)})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        m = entry.runtime_data
+        for market in NAMES:
+            cov = m.coverage[market]
+            assert cov["candles"] >= 24 * 420 - 1  # oudere historie én de laatste uren bijgehaald
+        assert m.report["preregistratie"] == "v2" and len(m.report["resultaten"]) == 17
+        old = json.loads((tmp_path / "bitvavo_bot" / "lab_report_v1.json").read_text())
+        assert old["beste"] == "grid 1h"
+        meta = json.loads((tmp_path / "bitvavo_bot" / "meta.json").read_text())
+        assert meta["historie_dagen"] == {n: 1460 for n in NAMES}
+
+
+async def test_unproven_plan_yields_to_lab_candidate(hass: HomeAssistant, tmp_path):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        m = entry.runtime_data
+        trader = m.trader
+        before = f"{trader.plan['strategie']} {trader.plan['tijdschaal']}"
+        other = "vol_breakout 4h" if before != "vol_breakout 4h" else "ema_cross 4h"
+        strat, tf = other.split(" ")
+        m.report = {**m.report, "kandidaten": [other], "oordeel": "kandidaat"}
+        for row in m.report["resultaten"]:
+            row["geslaagd"] = row["strategie"] == strat and row["tijdschaal"] == tf
+        m.report["resultaten"].sort(key=lambda r: not r["geslaagd"])
+        await trader.async_on_data()
+        assert f"{trader.plan['strategie']} {trader.plan['tijdschaal']}" == other
+        assert trader.plan["bewezen"] is True
+        assert trader.paper.book["positions"] == [] and trader.paper.book["orders"] == []
+        assert hass.states.get("sensor.bitvavo_bot_strategie").state == other

@@ -1,6 +1,7 @@
 import pytest
 
 from custom_components.bitvavo_bot.lab import (
+    Context,
     DAY_MS,
     LabConfig,
     buy_hold,
@@ -86,9 +87,9 @@ def test_random_walk_finds_no_edge():
     """Op ruis zonder drift mag niets door de toets komen."""
     data = {f"M{i}-EUR": make_bars(24 * 500, seed=100 + i, vol=0.012) for i in range(4)}
     rep = run_lab(data)
-    assert rep["hypotheses"] == 12
-    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 12, abs=1e-5)
-    assert len(rep["resultaten"]) == 12
+    assert rep["hypotheses"] == 17
+    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 17, abs=1e-5)
+    assert len(rep["resultaten"]) == 17 and rep["preregistratie"] == "v2"
     assert rep["oordeel"] == "geen edge" and rep["kandidaten"] == []
 
 
@@ -128,3 +129,67 @@ def test_select_params_skips_young_markets():
     chosen = select_params({"OLD-EUR": old, "NEW-EUR": young}, "grid", "1h")
     assert chosen["NEW-EUR"] is None
     assert chosen["OLD-EUR"] is not None
+
+
+def _trend(n_days, daily, start_px=100.0, seed=1):
+    """Uurbars met een vaste dagelijkse groei en een beetje ruis."""
+    import math as _m
+    import random as _r
+
+    rnd, out, px = _r.Random(seed), [], start_px
+    t0 = 1_700_000_000_000 // (24 * H) * (24 * H)
+    for i in range(n_days * 24):
+        o = px
+        c = o * _m.exp(daily / 24 + rnd.gauss(0, 0.001))
+        out.append((t0 + i * H, o, max(o, c), min(o, c), c, 1.0))
+        px = c
+    return out
+
+
+def test_context_regime_and_ranking_do_not_look_ahead():
+    data = {
+        "BTC-EUR": _trend(400, 0.002, seed=1),
+        "FAST-EUR": _trend(400, 0.01, seed=2),
+        "MID-EUR": _trend(400, 0.004, seed=3),
+        "SLOW-EUR": _trend(400, -0.004, seed=4),
+        "FLAT-EUR": _trend(400, 0.0, seed=5),
+    }
+    ctx = Context(data)
+    t0 = data["BTC-EUR"][0][0]
+    day = 24 * H
+    assert not ctx.regime_at(t0 + 150 * day)  # nog geen 200 dagen historie
+    assert ctx.regime_at(t0 + 300 * day)  # stijgende BTC boven zijn gemiddelde
+    t = t0 + 300 * day
+    assert ctx.is_selected("FAST-EUR", 30, t) and ctx.is_selected("MID-EUR", 30, t)
+    assert not ctx.is_selected("SLOW-EUR", 30, t)
+    # zelfde antwoord als alle data ná t wordt weggelaten
+    cut = {m: [b for b in bars if b[0] + H <= t] for m, bars in data.items()}
+    ctx2 = Context(cut)
+    for m in data:
+        assert ctx2.is_selected(m, 30, t) == ctx.is_selected(m, 30, t)
+    assert ctx2.regime_at(t) == ctx.regime_at(t)
+    falling = Context({"BTC-EUR": _trend(400, -0.003)})
+    assert not falling.regime_at(t0 + 300 * day)
+
+
+def test_v2_no_false_positive_on_noise_with_btc_present():
+    data = {"BTC-EUR": make_bars(24 * 700, seed=900, vol=0.012)}
+    data.update({f"M{i}-EUR": make_bars(24 * 700, seed=910 + i, vol=0.012) for i in range(5)})
+    rep = run_lab(data)
+    assert rep["oordeel"] == "geen edge"
+    v2 = [r for r in rep["resultaten"] if r["versie"] == "v2"]
+    assert len(v2) == 5 and any(r["trades"] > 0 for r in v2)
+
+
+def test_select_params_pooled_gives_one_choice_for_all_markets():
+    data = {
+        "BTC-EUR": _trend(500, 0.002, seed=1),
+        "FAST-EUR": _trend(500, 0.008, seed=2),
+        "MID-EUR": _trend(500, 0.004, seed=3),
+        "SLOW-EUR": _trend(500, -0.002, seed=4),
+        "NEW-EUR": _trend(60, 0.02, seed=5),
+    }
+    chosen = select_params(data, "rel_strength", "1d")
+    assert chosen["NEW-EUR"] is None  # te jong
+    picks = {v for k, v in chosen.items() if k != "NEW-EUR"}
+    assert len(picks) == 1

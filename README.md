@@ -9,12 +9,13 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 | 0.1 | Data + Lab (backtest, walk-forward) |
 | 0.2 | Handelsmotor, paper trading, schakelaar paper/live met slot, risicogrenzen, noodstop, handelsscherm |
 | 0.3 | Grid-orders eerlijk verdeeld over markten, jonge markten (< 240 dagen) uitgesloten, resultaatgrafiek |
+| 0.4 | Preregistratie v2: 3 nieuwe strategieën (relatieve sterkte, trend met marktfilter, volatiliteitsuitbraak), 4 jaar historie, automatisch overstappen op een Lab-kandidaat |
 
 ## Hoe het werkt
 
 1. Bij installatie kiest de bot de meest verhandelde EUR-markten (standaard 10)
-   en haalt 2 jaar uurcandles op. Daarna elk uur het nieuwe stuk.
-2. Het Lab toetst 12 vooraf vastgelegde hypotheses, walk-forward en na kosten.
+   en haalt 4 jaar uurcandles op. Daarna elk uur het nieuwe stuk.
+2. Het Lab toetst 17 vooraf vastgelegde hypotheses, walk-forward en na kosten.
    Zie [docs/PREREGISTRATIE.md](docs/PREREGISTRATIE.md).
 3. De bot kiest de Lab-kandidaat. Is er geen, dan de beste hypothese, zichtbaar
    gemarkeerd als **onbewezen**. Per markt kiest hij de parameters op de laatste

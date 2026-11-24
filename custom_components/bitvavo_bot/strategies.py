@@ -218,43 +218,55 @@ def simulate_grid(
 
 Runner = Callable[[Sequence[Bar], Costs], list[Trade]]
 
-
-def _signal(fn, **kw) -> Runner:
-    return lambda bars, costs: simulate_signals(bars, fn(bars, **kw), costs)
-
-
-def _grid(**kw) -> Runner:
-    return lambda bars, costs: simulate_grid(bars, costs=costs, **kw)
+TARGETS = {
+    "donchian": target_donchian,
+    "ema_cross": target_ema_cross,
+    "rsi_dip": target_rsi_dip,
+}
 
 
-def param_grid() -> dict[str, dict[str, Runner]]:
+def param_specs() -> dict[str, dict[str, dict]]:
     """De vooraf vastgelegde parameterruimte (zie docs/PREREGISTRATIE.md).
 
     Wijzigen = nieuwe preregistratie-versie; niet stilletjes bijstellen.
     """
     return {
         "donchian": {
-            f"in{e}/uit{x}": _signal(target_donchian, entry_n=e, exit_n=x)
-            for e in (20, 55, 100)
-            for x in (10, 20)
+            f"in{e}/uit{x}": {"entry_n": e, "exit_n": x} for e in (20, 55, 100) for x in (10, 20)
         },
         "ema_cross": {
-            f"{f}/{s}": _signal(target_ema_cross, fast=f, slow=s)
-            for f, s in ((10, 30), (20, 50), (20, 100), (50, 200))
+            f"{f}/{s}": {"fast": f, "slow": s} for f, s in ((10, 30), (20, 50), (20, 100), (50, 200))
         },
         "rsi_dip": {
-            f"rsi{n}<{lo} trend{t}": _signal(
-                target_rsi_dip, rsi_n=n, low=lo, high=60.0, trend_n=t, max_hold=10
-            )
+            f"rsi{n}<{lo} trend{t}": {"rsi_n": n, "low": lo, "high": 60.0, "trend_n": t, "max_hold": 10}
             for n, lo in ((2, 10.0), (3, 15.0), (5, 25.0))
             for t in (100, 200)
         },
         "grid": {
-            f"stap{int(s * 1000) / 10}% x{lv}": _grid(ref_n=50, step=s, levels=lv, max_hold=200)
+            f"stap{int(s * 1000) / 10}% x{lv}": {"ref_n": 50, "step": s, "levels": lv, "max_hold": 200}
             for s in (0.02, 0.03, 0.05)
             for lv in (3, 5)
         },
     }
+
+
+def make_runner(strategy: str, kwargs: dict) -> Runner:
+    if strategy == "grid":
+        return lambda bars, costs: simulate_grid(bars, costs=costs, **kwargs)
+    fn = TARGETS[strategy]
+    return lambda bars, costs: simulate_signals(bars, fn(bars, **kwargs), costs)
+
+
+def param_grid() -> dict[str, dict[str, Runner]]:
+    return {
+        strat: {name: make_runner(strat, kw) for name, kw in params.items()}
+        for strat, params in param_specs().items()
+    }
+
+
+def live_target(strategy: str, kwargs: dict, bars: Sequence[Bar]) -> list[int]:
+    """Doelpositie per bar voor een signaalstrategie (zelfde code als de backtest)."""
+    return TARGETS[strategy](bars, **kwargs)
 
 
 STRATEGY_LABELS = {

@@ -32,6 +32,7 @@ from .const import (
 )
 from .lab import run_lab
 from .store import Store
+from .trader import Trader
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class BitvavoBotManager:
         self.report: dict | None = None
         self.lab_running = False
         self._lock = asyncio.Lock()
+        self.trader = Trader(hass, self)
 
     # ------------------------------------------------------------ eigenschappen
 
@@ -74,16 +76,35 @@ class BitvavoBotManager:
     def _notify(self) -> None:
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.entry.entry_id}")
 
+    notify = _notify
+
+    def load_all_candles(self) -> dict[str, list]:
+        return {m: self.store.load_candles(m) for m in self.markets}
+
     # ------------------------------------------------------------------ opstart
 
     async def async_start(self) -> None:
         """Laad wat er al is; haal ontbrekende data op en draai zo nodig het Lab."""
         self.report = await self.hass.async_add_executor_job(self.store.load_report)
+        await self.trader.async_load()
         await self._refresh_coverage()
         self._notify()
         await self.async_update_data()
         if self.report is None and self.status == STATUS_IDLE and self.total_candles:
             await self.async_run_lab()
+        await self.async_trade_cycle()
+
+    async def async_hourly(self) -> None:
+        await self.async_update_data()
+        await self.async_trade_cycle()
+
+    async def async_trade_cycle(self) -> None:
+        if self.status != STATUS_IDLE or not self.report:
+            return
+        try:
+            await self.trader.async_on_data()
+        except Exception:  # noqa: BLE001 - een fout in de handel mag HA nooit onderuit halen
+            _LOGGER.exception("Handelscyclus mislukt")
 
     async def _refresh_coverage(self) -> None:
         def _scan() -> dict[str, dict]:

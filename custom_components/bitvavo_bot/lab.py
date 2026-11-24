@@ -99,6 +99,35 @@ def walk_forward(
     return oos, chosen
 
 
+def closed_bars(hour_bars: Sequence[Bar], factor: int, base_ms: int = 3_600_000) -> list[Bar]:
+    """Alleen volledig afgesloten bars van factor uur (voor live gebruik)."""
+    out = resample(hour_bars, factor, base_ms)
+    if out and hour_bars and out[-1][0] + factor * base_ms > hour_bars[-1][0] + base_ms:
+        out.pop()
+    return out
+
+
+def select_params(
+    data: Mapping[str, Sequence[Bar]], strategy: str, timeframe: str, cfg: LabConfig | None = None
+) -> dict[str, str | None]:
+    """Kies per markt de parameterset voor de komende periode, exact zoals de
+    walk-forward dat doet: beste op de laatste train_days, anders niet handelen."""
+    cfg = cfg or LabConfig()
+    params = param_grid()[strategy]
+    out: dict[str, str | None] = {}
+    for market, hour_bars in data.items():
+        bars = closed_bars(hour_bars, TIMEFRAMES[timeframe])
+        if len(bars) < 300:
+            out[market] = None
+            continue
+        end = bars[-1][0]
+        fold = [(end - cfg.train_days * DAY_MS, end, end + cfg.test_days * DAY_MS)]
+        per_param = {name: run(bars, cfg.costs) for name, run in params.items()}
+        _, chosen = walk_forward(per_param, fold, cfg)
+        out[market] = next(iter(chosen), None)
+    return out
+
+
 def p_value_positive(samples: Sequence[float]) -> tuple[float, float]:
     """Eenzijdige toets gemiddelde > 0. Geeft (t, p); normale benadering."""
     n = len(samples)

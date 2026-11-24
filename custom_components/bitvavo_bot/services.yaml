@@ -1,6 +1,22 @@
 update_data:
   name: Data bijwerken
-  description: Haalt ontbrekende uurcandles op bij Bitvavo.
+  description: Haalt ontbrekende uurcandles op en verwerkt nieuwe signalen.
 run_lab:
   name: Lab draaien
-  description: Draait de walk-forward-toets opnieuw op de opgeslagen data. Plaatst geen orders.
+  description: Draait de walk-forward-toets opnieuw op de opgeslagen data.
+override_lock:
+  name: Live-slot overbruggen
+  description: Zet het slot op live handelen bewust open, ook als de voorwaarden niet gehaald zijn.
+  fields:
+    bevestiging:
+      name: Bevestiging
+      description: 'Typ exact: IK ACCEPTEER HET RISICO'
+      required: true
+      selector:
+        text:
+restore_lock:
+  name: Live-slot herstellen
+  description: Maakt de overbrugging ongedaan. Live gaat uit als de voorwaarden niet gehaald zijn.
+kies_strategie:
+  name: Strategie opnieuw kiezen
+  description: Sluit alle posities en kiest de strategie opnieuw uit het laatste Lab-rapport.

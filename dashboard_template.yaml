@@ -1,60 +1,8 @@
 title: Bitvavo Bot
 views:
-  - title: Lab
-    path: lab
-    icon: mdi:flask
+  - title: Handel
+    path: handel
+    icon: mdi:chart-box
+    type: panel
     cards:
-      - type: entities
-        title: Status
-        entities:
-          - entity: sensor.bitvavo_bot_data
-            name: Data
-          - type: attribute
-            entity: sensor.bitvavo_bot_data
-            attribute: voortgang
-            name: Voortgang
-          - type: attribute
-            entity: sensor.bitvavo_bot_data
-            attribute: candles
-            name: Candles opgeslagen
-          - entity: sensor.bitvavo_bot_lab_oordeel
-            name: Lab-oordeel
-          - entity: sensor.bitvavo_bot_beste_netto_per_trade
-            name: Beste netto per trade (OOS)
-          - type: attribute
-            entity: sensor.bitvavo_bot_lab_oordeel
-            attribute: buy_hold_pct
-            name: Kopen-en-vasthouden (zelfde periode)
-            suffix: "%"
-      - type: markdown
-        title: Uitslag per hypothese (out-of-sample, na kosten)
-        content: >-
-          {% set e = 'sensor.bitvavo_bot_lab_oordeel' %}
-          {% set rows = state_attr(e, 'resultaten') or [] %}
-          {% if not rows %}Het Lab heeft nog niet gedraaid.{% else %}
-
-          Gedraaid: {{ state_attr(e, 'gedraaid_op') }} ·
-          {{ state_attr(e, 'hypotheses') }} hypotheses ·
-          drempel p < {{ state_attr(e, 'alpha_gecorrigeerd') }}
-
-
-          | | Strategie | Tijd | Trades | Netto/trade | Alpha | p | Markten + | Gezakt op |
-
-          |---|---|---|---|---|---|---|---|---|
-
-          {% for r in rows %}| {{ '✅' if r.geslaagd else '❌' }} | {{ r.naam }} | {{ r.tijdschaal }} | {{ r.trades }} | {{ r.netto_pct }}% | {{ r.alpha_pct }}% | {{ r.p }} | {{ r.markten_positief_pct }}% | {{ r.gezakt_op | join(', ') }} |
-
-          {% endfor %}{% endif %}
-      - type: markdown
-        title: Markten
-        content: >-
-          {% set d = state_attr('sensor.bitvavo_bot_data', 'dekking') or {} %}
-          {% if not d %}Nog geen data.{% else %}
-
-          | Markt | Candles | Van | Tot |
-
-          |---|---|---|---|
-
-          {% for m, c in d.items() %}| {{ m }} | {{ c.candles }} | {{ c.van[:10] }} | {{ c.tot[:10] }} |
-
-          {% endfor %}{% endif %}
+      - type: custom:bitvavo-bot-card

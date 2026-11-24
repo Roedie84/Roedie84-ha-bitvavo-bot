@@ -40,6 +40,19 @@ class Store:
         self.save_candles(market, rows)
         return rows
 
+    def load_json(self, name: str) -> dict | None:
+        path = self._base / name
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def save_json(self, name: str, payload: dict) -> None:
+        self.ensure()
+        self._atomic(self._base / name, payload, compress=False)
+
     def load_report(self) -> dict | None:
         path = self._base / "lab_report.json"
         if not path.exists():

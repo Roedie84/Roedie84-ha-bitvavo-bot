@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import time
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -44,6 +48,18 @@ class BitvavoPublicClient:
                     raise BitvavoError(f"{path}: {err}") from err
                 await asyncio.sleep(2 * (attempt + 1))
         raise BitvavoError(f"{path}: geen antwoord na herhaalde pogingen")
+
+    async def ticker_prices(self) -> dict[str, float]:
+        out = {}
+        for row in await self._get("/ticker/price"):
+            try:
+                out[row["market"]] = float(row["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    async def market_info(self) -> dict[str, dict]:
+        return {m["market"]: m for m in await self._get("/markets") if "market" in m}
 
     async def top_eur_markets(self, count: int) -> list[str]:
         """De meest verhandelde EUR-markten (24u-omzet), zonder stablecoins."""
@@ -104,3 +120,63 @@ def select_markets(markets, tickers, count: int) -> list[str]:
                 continue
     ranked.sort(reverse=True)
     return [m for _, m in ranked[:count]]
+
+
+class BitvavoPrivateClient:
+    """Ondertekende REST-aanroepen (orders en saldo). Alleen gebruikt in live-modus."""
+
+    def __init__(self, session: aiohttp.ClientSession, key: str, secret: str) -> None:
+        self._session = session
+        self._key = key
+        self._secret = secret.encode()
+
+    def _headers(self, method: str, path: str, body: str) -> dict:
+        ts = str(int(time.time() * 1000))
+        sig = hmac.new(self._secret, f"{ts}{method}/v2{path}{body}".encode(), hashlib.sha256).hexdigest()
+        return {
+            "Bitvavo-Access-Key": self._key,
+            "Bitvavo-Access-Signature": sig,
+            "Bitvavo-Access-Timestamp": ts,
+            "Bitvavo-Access-Window": "10000",
+            "Content-Type": "application/json",
+        }
+
+    async def request(self, method: str, path: str, params: dict | None = None, body: dict | None = None):
+        """Eén poging, bewust zonder automatische herhaling: een order mag nooit dubbel."""
+        if params:
+            path = f"{path}?{urlencode(params)}"
+        payload = json.dumps(body, separators=(",", ":")) if body is not None else ""
+        try:
+            async with self._session.request(
+                method,
+                f"{API_BASE}{path}",
+                data=payload or None,
+                headers=self._headers(method, path, payload),
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                text = await resp.text()
+                try:
+                    data = json.loads(text) if text else {}
+                except ValueError:
+                    data = {"error": text[:200]}
+                if resp.status >= 400:
+                    raise BitvavoApiError(
+                        resp.status,
+                        data.get("errorCode") if isinstance(data, dict) else None,
+                        (data.get("error") if isinstance(data, dict) else None) or f"HTTP {resp.status}",
+                    )
+                return data
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise BitvavoNetworkError(str(err) or type(err).__name__) from err
+
+
+class BitvavoApiError(BitvavoError):
+    """Bitvavo heeft het verzoek afgewezen."""
+
+    def __init__(self, status: int, code, message: str) -> None:
+        super().__init__(f"{message} (code {code}, HTTP {status})")
+        self.status, self.code = status, code
+
+
+class BitvavoNetworkError(BitvavoError):
+    """Geen (tijdig) antwoord: onbekend of het verzoek is aangekomen."""

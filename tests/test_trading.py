@@ -1,0 +1,166 @@
+import json
+import time
+from contextlib import contextmanager
+from unittest.mock import patch
+
+import pytest
+
+from homeassistant.config_entries import SOURCE_USER
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+
+from custom_components.bitvavo_bot.const import CANDLE_MS, DOMAIN
+
+from .helpers import make_bars
+from .test_live_broker import MARKETS, FakeExchange
+
+NAMES = ("BTC-EUR", "ETH-EUR", "SOL-EUR")
+
+
+@contextmanager
+def fake_bitvavo(now):
+    n = 24 * 420
+    series = {
+        m: [list(b) for b in make_bars(n, seed=40 + s, vol=0.012, start=now - n * CANDLE_MS)]
+        for s, m in enumerate(NAMES)
+    }
+
+    async def top(self, count):
+        return list(series)[:count]
+
+    async def candles(self, market, since, until):
+        return [r for r in series[market] if since <= r[0] < until]
+
+    async def prices(self):
+        return {m: rows[-1][4] for m, rows in series.items()}
+
+    async def info(self):
+        return {m: {**MARKETS["BTC-EUR"], "market": m, "base": m.split("-")[0]} for m in series}
+
+    base = "custom_components.bitvavo_bot.api.BitvavoPublicClient."
+    with (
+        patch(base + "top_eur_markets", top),
+        patch(base + "candles", candles),
+        patch(base + "ticker_prices", prices),
+        patch(base + "market_info", info),
+    ):
+        yield series
+
+
+async def _setup(hass, tmp_path):
+    hass.config.config_dir = str(tmp_path)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"market_count": 3, "history_days": 400}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    return result["result"]
+
+
+async def test_paper_starts_and_live_is_locked(hass: HomeAssistant, tmp_path):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        trader = entry.runtime_data.trader
+        for eid in (
+            "switch.bitvavo_bot_live", "switch.bitvavo_bot_handel_actief", "button.bitvavo_bot_noodstop",
+            "number.bitvavo_bot_max_per_koop", "number.bitvavo_bot_max_totaal", "number.bitvavo_bot_max_dagverlies",
+            "sensor.bitvavo_bot_strategie", "sensor.bitvavo_bot_live_slot", "sensor.bitvavo_bot_paper_resultaat",
+            "sensor.bitvavo_bot_live_resultaat",
+        ):
+            assert hass.states.get(eid) is not None, eid
+        assert hass.states.get("switch.bitvavo_bot_live").state == "off"
+        assert hass.states.get("switch.bitvavo_bot_handel_actief").state == "on"
+        assert hass.states.get("number.bitvavo_bot_max_per_koop").state == "25.0"
+        assert hass.states.get("sensor.bitvavo_bot_live_slot").state == "op slot"
+        # het plan is gekozen en de paper-motor heeft elke markt verwerkt
+        assert trader.plan and hass.states.get("sensor.bitvavo_bot_strategie").state != "nog niet gekozen"
+        assert set(trader.paper.book["last_bar"]) == set(NAMES)
+        if trader.plan["strategie"] != "grid":  # signaalstrategie: nooit halverwege instappen bij de start
+            assert trader.paper.book["positions"] == []
+        assert trader.paper.invested() <= trader.limits.max_total
+        assert set(trader.plan["params"]) == set(NAMES)
+
+        # slot: live aanzetten wordt geweigerd
+        with pytest.raises(HomeAssistantError, match="op slot"):
+            await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.bitvavo_bot_live"}, blocking=True)
+        assert not trader.live
+        with pytest.raises(HomeAssistantError, match="Bevestiging onjuist"):
+            await hass.services.async_call(DOMAIN, "override_lock", {"bevestiging": "ja"}, blocking=True)
+        await hass.services.async_call(DOMAIN, "override_lock", {"bevestiging": "ik accepteer het risico"}, blocking=True)
+        assert hass.states.get("sensor.bitvavo_bot_live_slot").state == "overbrugd"
+        # zonder sleutel in secrets.yaml kan live niet aan
+        with pytest.raises(HomeAssistantError, match="secrets.yaml"):
+            await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.bitvavo_bot_live"}, blocking=True)
+        assert not trader.live
+
+        # met sleutel en een (nagebootste) beurs
+        (tmp_path / "secrets.yaml").write_text("bitvavo_api_key: abc\nbitvavo_api_secret: def\n")
+        ex = FakeExchange(eur=412.6)
+        with patch("custom_components.bitvavo_bot.api.BitvavoPrivateClient.request", lambda self, *a, **k: ex.request(*a, **k)):
+            await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.bitvavo_bot_live"}, blocking=True)
+            assert trader.live and trader.balance_eur == 412.6
+            assert hass.states.get("switch.bitvavo_bot_live").state == "on"
+            assert trader.live_engine.book["last_bar"] == trader.paper.book["last_bar"]
+            assert trader.live_engine.book["positions"] == []
+            assert not [c for c in ex.calls if c[0] == "POST"]  # aanzetten plaatst zelf geen order
+            assert trader.live_engine.book is not trader.paper.book
+
+            await hass.services.async_call(
+                "number", "set_value", {"entity_id": "number.bitvavo_bot_max_per_koop", "value": 50}, blocking=True
+            )
+            assert trader.limits.max_per_buy == 50.0
+            await hass.services.async_call(DOMAIN, "update_data", blocking=True)
+            await trader.async_minute()
+
+            saved = json.loads((tmp_path / "bitvavo_bot" / "trader_state.json").read_text())
+            assert saved["live"] is True and saved["limits"]["max_per_buy"] == 50.0 and saved["override"] is True
+            assert "abc" not in json.dumps(saved) and "def" not in json.dumps(saved["plan"])
+
+            await hass.services.async_call("button", "press", {"entity_id": "button.bitvavo_bot_noodstop"}, blocking=True)
+        assert not trader.live and not trader.trading
+        assert hass.states.get("switch.bitvavo_bot_live").state == "off"
+        assert hass.states.get("switch.bitvavo_bot_handel_actief").state == "off"
+        await hass.services.async_call(DOMAIN, "restore_lock", blocking=True)
+        assert hass.states.get("sensor.bitvavo_bot_live_slot").state == "op slot"
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        for svc in ("override_lock", "restore_lock", "kies_strategie", "run_lab", "update_data"):
+            assert not hass.services.has_service(DOMAIN, svc)
+
+
+async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_path, hass_ws_client):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        trader = entry.runtime_data.trader
+        trader.paper.book["realized"] = 3.21
+        trader.paper.book["trade_count"] = 4
+        await trader.async_set_limit("max_total", 500)
+        started = trader.paper.book["started"]
+        plan = dict(trader.plan)
+
+        ws = await hass_ws_client(hass)
+        await ws.send_json({"id": 1, "type": "bitvavo_bot/overview"})
+        o = (await ws.receive_json())["result"]
+        assert o["mode"] == "paper" and o["lock"]["state"] == "op slot" and o["version"]
+        assert [m["market"] for m in o["markets"]] == list(NAMES)
+        assert all(m["price"] and m["change"] is not None for m in o["markets"])
+        assert o["book"]["gerealiseerd"] == 3.21 and o["limits"]["max_total"] == 500
+        assert len(o["lab"]["resultaten"]) == 12 and o["plan"]["strategie"] == plan["strategie"]
+        await ws.send_json({"id": 2, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": plan["tijdschaal"]})
+        c = (await ws.receive_json())["result"]
+        assert 100 < len(c["bars"]) <= 160 and len(c["bars"][0]) == 6
+        for line in c["lines"]:
+            assert len(line["values"]) == len(c["bars"])
+        await ws.send_json({"id": 3, "type": "bitvavo_bot/chart", "market": "NOPE-EUR"})
+        assert (await ws.receive_json())["success"] is False
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
+        t2 = entry.runtime_data.trader
+        assert t2 is not trader
+        assert t2.paper.book["realized"] == 3.21 and t2.paper.book["trade_count"] == 4
+        assert t2.paper.book["started"] == started and t2.limits.max_total == 500
+        assert t2.plan["strategie"] == plan["strategie"] and t2.plan["selected_at"] == plan["selected_at"]

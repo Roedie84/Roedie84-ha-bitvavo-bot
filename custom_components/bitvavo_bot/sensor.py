@@ -1,16 +1,14 @@
-"""Sensoren: datastatus en Lab-uitslag."""
+"""Sensoren: data, Lab, strategie, slot en resultaat."""
 
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.const import CURRENCY_EURO, PERCENTAGE
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SIGNAL_UPDATE, VERSION
+from .entity import BotEntity
 from .manager import BitvavoBotManager
 
 
@@ -18,37 +16,21 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     manager: BitvavoBotManager = entry.runtime_data
-    async_add_entities([DataSensor(manager), VerdictSensor(manager), BestNetSensor(manager)])
+    async_add_entities(
+        [
+            DataSensor(manager),
+            VerdictSensor(manager),
+            BestNetSensor(manager),
+            StrategySensor(manager),
+            LockSensor(manager),
+            ResultSensor(manager, "paper"),
+            ResultSensor(manager, "live"),
+        ]
+    )
 
 
-class _Base(SensorEntity):
-    _attr_should_poll = False
-    _attr_has_entity_name = True
-    _key = ""
-
-    def __init__(self, manager: BitvavoBotManager) -> None:
-        self._m = manager
-        self._attr_unique_id = f"{manager.entry.entry_id}_{self._key}"
-        self.entity_id = f"sensor.{DOMAIN}_{self._key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, manager.entry.entry_id)},
-            name="Bitvavo Bot",
-            manufacturer="Roedie84",
-            model="Lab (geen orders)",
-            sw_version=VERSION,
-            entry_type=DeviceEntryType.SERVICE,
-        )
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, f"{SIGNAL_UPDATE}_{self._m.entry.entry_id}", self._refresh
-            )
-        )
-
-    @callback
-    def _refresh(self) -> None:
-        self.async_write_ha_state()
+class _Base(BotEntity, SensorEntity):
+    pass
 
 
 class DataSensor(_Base):
@@ -114,3 +96,64 @@ class BestNetSensor(_Base):
     @property
     def native_value(self) -> float | None:
         return (self._m.report or {}).get("beste_netto_pct")
+
+
+class StrategySensor(_Base):
+    _key = "strategie"
+    _attr_name = "Strategie"
+    _attr_icon = "mdi:chart-timeline-variant"
+
+    @property
+    def native_value(self) -> str:
+        p = self._m.trader.plan
+        return f"{p['strategie']} {p['tijdschaal']}" if p else "nog niet gekozen"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        p = self._m.trader.plan or {}
+        return {"bewezen": p.get("bewezen", False), "parameters": p.get("params", {})}
+
+
+class LockSensor(_Base):
+    _key = "live_slot"
+    _attr_name = "Live-slot"
+    _attr_icon = "mdi:lock"
+
+    @property
+    def native_value(self) -> str:
+        return self._m.trader.lock_status()["state"]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        s = self._m.trader.lock_status()
+        return {**s["checks"], "paper_dagen": s["paper_dagen"], "nodig_dagen": s["nodig_dagen"]}
+
+
+class ResultSensor(_Base):
+    _attr_native_unit_of_measurement = CURRENCY_EURO
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:cash-register"
+
+    def __init__(self, manager, book: str) -> None:
+        self._key = f"{book}_resultaat"
+        self._book = book
+        self._attr_name = "Resultaat paper" if book == "paper" else "Resultaat live"
+        super().__init__(manager)
+
+    def _engine(self):
+        t = self._m.trader
+        return t.paper if self._book == "paper" else t.live_engine
+
+    @property
+    def native_value(self) -> float | None:
+        e = self._engine()
+        return round(e.pnl(self._m.trader.prices), 2) if e else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        e = self._engine()
+        if not e:
+            return {}
+        s = e.summary(self._m.trader.prices)
+        return {k: s[k] for k in ("vandaag", "ingezet", "trades", "winst_pct_trades", "open_posities", "open_orders", "dagstop", "laatste_fout")}

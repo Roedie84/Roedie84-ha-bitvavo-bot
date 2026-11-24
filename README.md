@@ -1,45 +1,59 @@
 # Bitvavo Bot (Home Assistant)
 
-Handelsbot voor Bitvavo, gebouwd in stappen. **v0.1 plaatst geen orders** en heeft
-geen API-sleutel nodig: hij verzamelt koersdata en toetst of er überhaupt een
-strategie is die na kosten geld verdient.
+Handelsbot voor Bitvavo (spot). Verzamelt koersdata, toetst strategieën in het
+Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
+**live met echt geld** alleen achter een slot.
 
-| Versie | Wat | Status |
-|---|---|---|
-| 0.1 | Data + Lab (backtest, walk-forward) | deze versie |
-| 0.2 | Paper trading van de winnaar(s) op live koersen | alleen als het Lab een kandidaat oplevert |
-| 0.3 | Echt geld, met harde limieten en noodstop | alleen als paper de backtest bevestigt |
+| Versie | Wat |
+|---|---|
+| 0.1 | Data + Lab (backtest, walk-forward) |
+| 0.2 | Handelsmotor, paper trading, schakelaar paper/live met slot, risicogrenzen, noodstop, handelsscherm |
 
-## Wat v0.1 doet
+## Hoe het werkt
 
-1. Kiest bij installatie de meest verhandelde EUR-markten (standaard 10, zonder
-   stablecoins) en legt die lijst vast.
-2. Haalt 2 jaar uurcandles op (eenmalig enkele minuten), daarna elke nacht om
-   03:17 alleen het nieuwe stuk. Opslag: `config/bitvavo_bot/`.
-3. Draait het Lab: 4 strategieën × 3 tijdschalen = 12 vooraf vastgelegde
-   hypotheses, walk-forward en na kosten. Zie [docs/PREREGISTRATIE.md](docs/PREREGISTRATIE.md).
-4. Meldt de uitslag als notificatie en in drie sensoren.
+1. Bij installatie kiest de bot de meest verhandelde EUR-markten (standaard 10)
+   en haalt 2 jaar uurcandles op. Daarna elk uur het nieuwe stuk.
+2. Het Lab toetst 12 vooraf vastgelegde hypotheses, walk-forward en na kosten.
+   Zie [docs/PREREGISTRATIE.md](docs/PREREGISTRATIE.md).
+3. De bot kiest de Lab-kandidaat. Is er geen, dan de beste hypothese, zichtbaar
+   gemarkeerd als **onbewezen**. Per markt kiest hij de parameters op de laatste
+   180 dagen en herkiest die elke 60 dagen, precies zoals in de backtest.
+4. Paper trading draait altijd, met dezelfde kosten als de backtest.
 
-De uitslag kan "geen edge" zijn. Dat is dan het antwoord; de drempels worden
-niet achteraf bijgesteld.
+## Live en het slot
+
+Live gaat pas open als alle drie waar zijn: het Lab heeft een kandidaat, paper
+draait 28 dagen, en paper staat netto in de plus. Overbruggen kan alleen met de
+service `bitvavo_bot.override_lock` en de letterlijke bevestiging.
+
+Voor live leest de bot `bitvavo_api_key` en `bitvavo_api_secret` uit
+`secrets.yaml`. Zet bij Bitvavo de opnamerechten van die sleutel uit.
+
+Grenzen die altijd gelden: maximum per koop, maximum totaal ingezet, maximaal
+dagverlies (daarna die dag geen nieuwe aankopen) en de noodstop (alles
+annuleren, alles verkopen, live uit, handel gepauzeerd).
+
+Margin/hefboom wordt niet gebruikt: Bitvavo biedt margin niet via de API aan.
 
 ## Installatie
 
 HACS → Aangepaste repository → `Roedie84/Roedie84-ha-bitvavo-bot` (Integratie) →
-installeren → HA herstarten → Instellingen → Apparaten & diensten → Integratie
-toevoegen → **Bitvavo Bot**.
+installeren → HA herstarten → Integratie toevoegen → **Bitvavo Bot**.
 
-Dashboard: `dashboard_template.yaml` (nieuw dashboard → YAML-editor → plakken).
+Dashboard: `dashboard_template.yaml`. De kaart `custom:bitvavo-bot-card` wordt
+door de integratie zelf geladen.
 
 ## Entiteiten en services
 
 | | |
 |---|---|
-| `sensor.bitvavo_bot_data` | `downloaden` / `gereed` / `fout`, met dekking per markt |
-| `sensor.bitvavo_bot_lab_oordeel` | `nog niet gedraaid` / `bezig` / `geen edge` / `kandidaat`, met de volledige tabel |
-| `sensor.bitvavo_bot_beste_netto_per_trade` | netto % per trade (OOS) van de beste hypothese |
-| `bitvavo_bot.update_data` | data nu bijwerken |
-| `bitvavo_bot.run_lab` | Lab opnieuw draaien |
+| `switch.bitvavo_bot_live` | live aan/uit (geweigerd zolang het slot dicht is) |
+| `switch.bitvavo_bot_handel_actief` | pauzeert nieuwe aankopen |
+| `button.bitvavo_bot_noodstop` | noodstop |
+| `number.bitvavo_bot_max_per_koop` / `_max_totaal` / `_max_dagverlies` | risicogrenzen |
+| `sensor.bitvavo_bot_paper_resultaat` / `_live_resultaat` | resultaat in euro |
+| `sensor.bitvavo_bot_strategie`, `_live_slot`, `_lab_oordeel`, `_data` | status |
+| `bitvavo_bot.update_data`, `run_lab`, `kies_strategie`, `override_lock`, `restore_lock` | services |
 
 ## Ontwikkelen
 

@@ -19,7 +19,18 @@ from typing import Mapping, Sequence
 
 from bisect import bisect_right
 
-from .strategies import HYPOTHESES, POOLED, STRATEGY_LABELS, Bar, Costs, Trade, param_specs, run_strategy
+from .strategies import (
+    HYPOTHESES,
+    POOLED,
+    SHORT,
+    STRATEGY_LABELS,
+    Bar,
+    Costs,
+    Trade,
+    leverage_table,
+    param_specs,
+    run_strategy,
+)
 
 DAY_MS = 86_400_000
 WEEK_MS = 7 * DAY_MS
@@ -109,7 +120,7 @@ def closed_bars(hour_bars: Sequence[Bar], factor: int, base_ms: int = 3_600_000)
     return out
 
 
-PREREG = "v2"
+PREREG = "v3"
 REGIME_MARKET = "BTC-EUR"
 REGIME_DAYS = 200
 TOP_N = 3
@@ -246,7 +257,9 @@ def market_drift(bars: Sequence[Bar], start_ms: int, end_ms: int) -> float:
 
 def excess(trade: Trade, drift: float) -> float:
     """Netto rendement min wat de markt gemiddeld deed in dezelfde tijdsduur."""
-    return trade.net - (math.exp(drift * (trade.exit_ts - trade.entry_ts)) - 1)
+    market = math.exp(drift * (trade.exit_ts - trade.entry_ts)) - 1
+    # short: willekeurig short zitten levert gemiddeld het omgekeerde van de markt op
+    return trade.net - market if trade.side > 0 else trade.net + market
 
 
 def buy_hold(bars: Sequence[Bar], start_ms: int, end_ms: int, costs: Costs) -> float | None:
@@ -328,6 +341,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
     bh_all: list[float] = []
     oos_range: list[int] = []
     tf_cache: dict[str, dict[str, list[Bar]]] = {}
+    oos_by_key: dict[str, list[Trade]] = {}
     first = True
 
     for strat, timeframes, is_pooled, prereg in HYPOTHESES:
@@ -355,6 +369,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
             pooled, chosen_all = _oos_trades(strat, params, is_pooled, usable, ctx, tf_ms, cfg)
 
             pooled = sorted(pooled, key=lambda t: t.entry_ts)
+            oos_by_key[f"{strat} {tf}"] = pooled
             pooled_excess = [excess(t, drifts.get(t.market, 0.0)) for t in pooled]
             by_market: dict[str, list[Trade]] = {}
             for t in pooled:
@@ -389,6 +404,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
                     "naam": STRATEGY_LABELS.get(strat, strat),
                     "tijdschaal": tf,
                     "versie": prereg,
+                    "short": strat in SHORT,
                     "trades": len(nets),
                     "netto_pct": round(mean_net * 100, 3),
                     "alpha_pct": round(mean_alpha * 100, 3),
@@ -410,8 +426,16 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
         r for r in results if r["trades"] > 0
     ]
     best = with_trades[0] if with_trades else None
+    # Hefboom: wat dezelfde out-of-sample trades van de beste long-hypothese met margin hadden gedaan
+    long_best = next((r for r in with_trades if not r["short"]), None)
+    lev_key = f"{long_best['strategie']} {long_best['tijdschaal']}" if long_best else None
     return {
         "preregistratie": PREREG,
+        "hefboom": {
+            "hypothese": lev_key,
+            "leen_pct_per_dag": cfg.costs.borrow_daily * 100,
+            "rijen": leverage_table(oos_by_key.get(lev_key, []), cfg.costs) if lev_key else [],
+        },
         "markten": sorted(data),
         "hypotheses": n_hyp,
         "alpha_gecorrigeerd": round(alpha_corr, 5),

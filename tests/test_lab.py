@@ -87,9 +87,9 @@ def test_random_walk_finds_no_edge():
     """Op ruis zonder drift mag niets door de toets komen."""
     data = {f"M{i}-EUR": make_bars(24 * 500, seed=100 + i, vol=0.012) for i in range(4)}
     rep = run_lab(data)
-    assert rep["hypotheses"] == 17
-    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 17, abs=1e-5)
-    assert len(rep["resultaten"]) == 17 and rep["preregistratie"] == "v2"
+    assert rep["hypotheses"] == 21
+    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 21, abs=1e-5)
+    assert len(rep["resultaten"]) == 21 and rep["preregistratie"] == "v3"
     assert rep["oordeel"] == "geen edge" and rep["kandidaten"] == []
 
 
@@ -193,3 +193,30 @@ def test_select_params_pooled_gives_one_choice_for_all_markets():
     assert chosen["NEW-EUR"] is None  # te jong
     picks = {v for k, v in chosen.items() if k != "NEW-EUR"}
     assert len(picks) == 1
+
+
+def test_report_has_leverage_table_and_marks_short_rows():
+    data = {"BTC-EUR": make_bars(24 * 700, seed=31, vol=0.004, cycle=0.01)}
+    data.update({f"M{i}-EUR": make_bars(24 * 700, seed=32 + i, vol=0.004, cycle=0.01) for i in range(3)})
+    rep = run_lab(data)
+    shorts = [r for r in rep["resultaten"] if r["short"]]
+    assert len(shorts) == 4 and all(r["versie"] == "v3" for r in shorts)
+    lev = rep["hefboom"]
+    assert lev["hypothese"] and " " in lev["hypothese"] and lev["leen_pct_per_dag"] == pytest.approx(0.05)
+    assert [r["hefboom"] for r in lev["rijen"]] == [1, 2, 3, 5]
+    one = lev["rijen"][0]
+    best = next(r for r in rep["resultaten"] if f"{r['strategie']} {r['tijdschaal']}" == lev["hypothese"])
+    assert one["trades"] == best["trades"] and one["gem_pct"] == pytest.approx(best["netto_pct"], abs=0.01)
+    assert one["liquidaties"] == 0
+
+
+def test_short_hypotheses_earn_in_a_falling_market_and_alpha_corrects_for_it():
+    """In een dalende markt verdient elke short; alpha moet dat wegstrepen."""
+    data = {"BTC-EUR": make_bars(24 * 700, seed=41, vol=0.012, drift=-0.00012)}
+    data.update({f"M{i}-EUR": make_bars(24 * 700, seed=42 + i, vol=0.012, drift=-0.00012) for i in range(5)})
+    rep = run_lab(data)
+    assert rep["buy_hold_pct"] < -50
+    shorts = [r for r in rep["resultaten"] if r["short"] and r["trades"] > 30]
+    assert shorts and any(r["netto_pct"] > 0 for r in shorts)
+    assert all(r["alpha_pct"] < r["netto_pct"] for r in shorts)
+    assert rep["oordeel"] == "geen edge"

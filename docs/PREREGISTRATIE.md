@@ -113,3 +113,47 @@ zijwaarts, sterk stijgend, dalend) kwam 0× een vals "kandidaat", bij gemiddeld
 - Kandidaat: de bot stapt automatisch over op die strategie (paper begint
   opnieuw te tellen voor het slot).
 - Geen kandidaat: het huidige paper-plan loopt door en het slot blijft dicht.
+
+---
+
+# Uitslag v2 (24-11-2026, 4 jaar data, 10 markten, 17 hypotheses)
+
+**Kandidaat: grid 1h** (1.304 trades, +1,638% netto per trade, alpha +1,150%,
+p = 0,00005, positief in alle markten). Geen van de vijf nieuwe v2-hypotheses
+haalde de drempel; beste was vol_breakout 1d (+3,591%, p = 0,081).
+
+Kanttekening: op alleen de laatste 2 jaar scoorde grid 1h in v1 +0,048%
+(p = 0,20). De houdbaarheidscheck van 26-11-2026 over de laatste 12 maanden
+gaf +1,075% per trade over 173 trades. Het volledige rapport blijft bewaard
+als `config/bitvavo_bot/lab_report_v2.json`.
+
+# Preregistratie v3 – margin (alleen simulatie), vastgelegd op 26-11-2026
+
+Bitvavo biedt margin niet via de API aan; niets hieronder kan dus met echt geld
+door de bot worden gehandeld. Het doel is zwart op wit te zien of short gaan of
+hefboom iets toevoegt.
+
+## Short-hypotheses (4 nieuw, totaal 21, drempel p < 0,05 / 21 = 0,0024)
+| Strategie | Regel | Parametersets | Tijdschaal |
+|---|---|---|---|
+| donchian_short | Short bij een slot onder de laagste low van N bars, alleen als BTC onder zijn 200-daags gemiddelde staat; dekken boven de hoogste high van M bars | N 20/55/100 × M 10/20 | 4h, 1d |
+| ema_cross_short | Short zolang de snelle EMA onder de trage ligt én BTC onder zijn 200-daags gemiddelde staat | 10/30, 20/50, 20/100, 50/200 | 4h, 1d |
+
+- Zonder hefboom (1×): je leent de munt voor de volle positie.
+- Kosten: 0,25% + 0,05% slippage per zijde, plus leenkosten van 0,05% per dag
+  (aanname; Bitvavo publiceert dagtarieven per munt die wisselen).
+- Alpha voor short = netto rendement plus wat de markt in dezelfde tijd deed:
+  in een dalende markt verdient elke short, dat telt niet als vaardigheid.
+- Een geslaagde short-hypothese wordt gemeld maar niet verhandeld.
+
+## Hefboomtabel (geen toets, wel een risicoberekening)
+Voor de beste long-hypothese worden dezelfde out-of-sample trades doorgerekend
+met 1×, 2×, 3× en 5× hefboom. Aannames: leenkosten 0,05% per dag over het
+geleende deel; liquidatie zodra de koers (1/hefboom − 5%) tegen de positie in
+gaat, gemeten op de laagste koers tijdens de looptijd; 2% liquidatiekosten over
+de hele positie (dat laatste is het tarief dat Bitvavo noemt; de 5% buffer is
+een aanname omdat Bitvavo de grens niet publiceert).
+
+## Controle van de toets zelf
+24 universums zonder patroon (10 markten × 4 jaar; zijwaarts, stijgend,
+dalend): 0× een vals "kandidaat", bij gemiddeld 145–854 short-trades.

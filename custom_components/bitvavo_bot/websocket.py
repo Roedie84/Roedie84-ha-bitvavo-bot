@@ -42,6 +42,7 @@ def ws_overview(hass, connection, msg) -> None:
                 "kandidaten": r.get("kandidaten", []),
                 "alpha": r.get("alpha_gecorrigeerd"),
                 "buy_hold_pct": r.get("buy_hold_pct"),
+                "hefboom": r.get("hefboom"),
                 "resultaten": [
                     {k: v for k, v in row.items() if k not in ("checks", "gekozen")}
                     for row in r.get("resultaten", [])

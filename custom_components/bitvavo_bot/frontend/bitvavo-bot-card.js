@@ -8,7 +8,7 @@ const LIMITS = [
   ["max_day_loss", "number.bitvavo_bot_max_dagverlies", "Max dagverlies"],
 ];
 const CHECKS = { lab_kandidaat: "Lab heeft een kandidaat", paper_28_dagen: "Paper draait 28 dagen", paper_positief: "Paper netto positief", recent_positief: "Laatste 12 maanden positief" };
-const NAMES = { donchian: "Trend – Donchian-uitbraak", ema_cross: "Trend – EMA-kruising", rsi_dip: "Mean-reversion – RSI-dip", grid: "Grid rond gemiddelde", rel_strength: "Relatieve sterkte (top 3)", donchian_regime: "Trend – Donchian met marktfilter", vol_breakout: "Volatiliteitsuitbraak" };
+const NAMES = { donchian: "Trend – Donchian-uitbraak", ema_cross: "Trend – EMA-kruising", rsi_dip: "Mean-reversion – RSI-dip", grid: "Grid rond gemiddelde", rel_strength: "Relatieve sterkte (top 3)", donchian_regime: "Trend – Donchian met marktfilter", vol_breakout: "Volatiliteitsuitbraak", donchian_short: "Short – Donchian-uitbraak omlaag", ema_cross_short: "Short – EMA-kruising omlaag" };
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nf = (v, d = 2) => (v == null || isNaN(v) ? "–" : Number(v).toLocaleString("nl-NL", { minimumFractionDigits: d, maximumFractionDigits: d }));
@@ -222,6 +222,16 @@ class BitvavoBotCard extends HTMLElement {
     } catch (e) { this.s.error = (e && e.message) || "Export mislukt"; this.render(); }
   }
 
+  leverageHtml() {
+    const h = this.o.lab.hefboom;
+    if (!h || !h.rijen || !h.rijen.length || !h.hypothese) return "";
+    const [st, tf] = h.hypothese.split(" ");
+    const rows = h.rijen.map((r) => `<tr><td><b>${r.hefboom}x</b>${r.hefboom === 1 ? ` <span style="color:${MUTED}">(zonder margin)</span>` : ""}</td><td style="color:${col(r.gem_pct)}">${pct(r.gem_pct, 2)}</td><td style="color:${DOWN_TXT}">${pct(r.slechtste_pct, 1)}</td><td>${nf(r.verlies_trades_pct, 0)}%</td><td style="color:${r.liquidaties ? DOWN_TXT : "#E7EAEE"}">${r.liquidaties}</td><td style="color:${DOWN_TXT}">−${nf(r.max_terugval_pct / 100, 1)}× inzet</td><td style="color:${col(r.totaal_pct)}">${r.totaal_pct > 0 ? "+" : r.totaal_pct < 0 ? "−" : ""}${nf(Math.abs(r.totaal_pct) / 100, 1)}× inzet</td></tr>`).join("");
+    return `<div class="note" style="padding-top:18px"><b style="color:#E7EAEE">Margin-simulatie: ${esc(NAMES[st] || st)} · ${esc(tf)}</b><br>Dezelfde out-of-sample trades, maar met geleend geld. Alle cijfers op je eigen inleg per trade; terugval en totaal in veelvouden van die inleg.</div>
+<table><thead><tr><th>Hefboom</th><th>Gem. per trade</th><th>Slechtste trade</th><th>Verliestrades</th><th>Liquidaties</th><th>Diepste terugval</th><th>Opgeteld</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="note">Aannames: leenkosten ${nf(h.leen_pct_per_dag, 2)}% per dag over het geleende deel, liquidatie zodra je buffer tot 5% is geslonken, 2% liquidatiekosten over de hele positie. Bitvavo biedt margin niet via de API aan; dit is alleen een berekening.</div>`;
+  }
+
   modalHtml() {
     const m = this.s.modal;
     if (!m) return "";
@@ -296,7 +306,7 @@ class BitvavoBotCard extends HTMLElement {
     }, ["Markt", "Gekocht", "Koers in", "Koers nu", "Verkoopdoel", "Inzet", "Resultaat na kosten"], "Geen open posities.") + (b.posities.length ? `<div class="note">Resultaat is wat je overhoudt als je nu verkoopt, na aan- en verkoopkosten (samen ruim 0,5%). Een verse positie begint daarom licht in de min, ook als de koers niet bewoog.</div>` : "");
     else if (s.tab === "ord") table = rows(o.orders, (r) => `<tr data-a="market" data-v="${esc(r.markt)}"><td><b>${esc(r.markt)}</b>${r.niveau ? `<div class="sub2">gridniveau ${r.niveau}</div>` : ""}</td><td style="color:${r.soort === "Kooplimiet" ? UP : DOWN_TXT}">${esc(r.soort)}</td><td>${price(r.limiet)}</td><td>${price(r.koers_nu)}</td><td>${r.afstand_pct == null ? "–" : pct(r.afstand_pct)}</td><td>${eur(r.bedrag)}</td></tr>`, ["Markt", "Soort", "Limiet", "Koers nu", "Afstand tot limiet", "Bedrag"], "Geen orders in het boek.") + (o.orders.length ? `<div class="note">Een kooplimiet wordt pas uitgevoerd als de koers tot de limiet daalt; een verkooplimiet als de koers ertoe stijgt.</div>` : "");
     else if (s.tab === "tr") table = rows(b.laatste_trades, (t) => `<tr><td><b>${esc(t.markt)}</b></td><td>${when(t.in)}</td><td>${when(t.uit)}</td><td>${eur(t.inzet)}</td><td style="color:${col(t.resultaat)}">${eur(t.resultaat, true)}</td><td style="color:${col(t.resultaat)}">${pct(t.pct)}</td><td>${esc(t.reden)}</td></tr>`, ["Markt", "In", "Uit", "Inzet", "Resultaat", "%", "Reden"], "Nog geen afgesloten trades.") + (b.trades ? `<div class="note"><button class="pill" data-a="csv">Alle ${b.trades} trades downloaden (CSV)</button></div>` : "");
-    else table = rows(o.lab.resultaten, (r) => `<tr><td>${r.geslaagd ? "✓" : "✕"} ${esc(NAMES[r.strategie] || r.strategie)} <span style="color:${MUTED}">${esc(r.versie || "")}</span></td><td>${esc(r.tijdschaal)}</td><td>${r.trades}</td><td style="color:${col(r.netto_pct)}">${pct(r.netto_pct, 3)}</td><td style="color:${col(r.alpha_pct)}">${pct(r.alpha_pct, 3)}</td><td>${nf(r.p, 4)}</td><td>${r.markten_positief_pct}%</td></tr>`, ["Hypothese", "Tijd", "Trades", "Netto/trade", "Alpha", "p", "Markten +"], "Het Lab heeft nog niet gedraaid.");
+    else table = rows(o.lab.resultaten, (r) => `<tr><td>${r.geslaagd ? "✓" : "✕"} ${esc(NAMES[r.strategie] || r.strategie)} <span style="color:${MUTED}">${esc(r.versie || "")}${r.short ? " · alleen simulatie" : ""}</span></td><td>${esc(r.tijdschaal)}</td><td>${r.trades}</td><td style="color:${col(r.netto_pct)}">${pct(r.netto_pct, 3)}</td><td style="color:${col(r.alpha_pct)}">${pct(r.alpha_pct, 3)}</td><td>${nf(r.p, 4)}</td><td>${r.markten_positief_pct}%</td></tr>`, ["Hypothese", "Tijd", "Trades", "Netto/trade", "Alpha", "p", "Markten +"], "Het Lab heeft nog niet gedraaid.") + this.leverageHtml();
     const checks = Object.entries(CHECKS).map(([k, label]) => { const ok = lock.checks[k]; const hb = lock.houdbaarheid; const extra = k === "paper_28_dagen" ? ` <span style="color:${MUTED}">(${lock.paper_dagen} van ${lock.nodig_dagen})</span>` : k === "recent_positief" ? ` <span style="color:${MUTED}">(${hb && hb.netto_pct != null ? pct(hb.netto_pct, 2) + " per trade, " + hb.trades + " trades" : "nog niet berekend"})</span>` : ""; return `<div class="chk"><span style="color:${ok ? UP : DOWN_TXT};font-weight:700">${ok ? "✓" : "✕"}</span><span>${label}${extra}</span></div>`; }).join("");
     const lockBtn = lock.state === "overbrugd" ? `<button class="ghost" data-a="go-restore">Slot herstellen</button>` : lock.state === "op slot" ? `<button class="ghost" data-a="override">Slot overbruggen…</button>` : "";
     const lockState = { "op slot": ["Op slot", "warn"], open: ["Open", "ok"], overbrugd: ["Overbrugd", "bad"] }[lock.state] || [lock.state, ""];

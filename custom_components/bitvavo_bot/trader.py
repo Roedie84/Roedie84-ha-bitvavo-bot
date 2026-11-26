@@ -20,7 +20,7 @@ from .api import BitvavoError, BitvavoPrivateClient
 from .brokers import LiveBroker, PaperBroker
 from .engine import BrokerError, Engine, Limits, new_book
 from .lab import DAY_MS, TIMEFRAMES, Context, closed_bars, recent_performance, resample, select_params
-from .strategies import Costs, compute_target, ema, param_specs, sma
+from .strategies import SHORT, Costs, compute_target, ema, param_specs, sma
 from .stream import BitvavoStream
 
 _LOGGER = logging.getLogger(__name__)
@@ -137,27 +137,31 @@ class Trader:
             return
         now = int(time.time() * 1000)
         plan = self.plan
-        # Een onbewezen plan maakt plaats zodra het Lab wél een kandidaat heeft.
-        if plan and not force and report.get("kandidaten"):
-            if f"{plan['strategie']} {plan['tijdschaal']}" not in report["kandidaten"]:
+        # Short-hypotheses zijn alleen gesimuleerd: Bitvavo biedt margin niet via de API.
+        tradable = [k for k in report.get("kandidaten", []) if k.split(" ")[0] not in SHORT]
+        # Een onbewezen plan maakt plaats zodra het Lab wél een (verhandelbare) kandidaat heeft.
+        if plan and not force and tradable:
+            if f"{plan['strategie']} {plan['tijdschaal']}" not in tradable:
                 for e in self.engines():
                     await e.flatten()
                     e.book["last_bar"] = {}
                 plan = None
         if plan is None or force:
             pick = None
-            for row in report.get("resultaten", []):
+            rows = [r for r in report.get("resultaten", []) if r["strategie"] not in SHORT]
+            for row in rows:
                 if row.get("geslaagd"):
                     pick = row
                     break
-            if pick is None and report.get("beste"):
-                strat, tf = report["beste"].split(" ")
-                pick = {"strategie": strat, "tijdschaal": tf}
+            if pick is None:
+                enough = [r for r in rows if r.get("trades", 0) >= 100] or [r for r in rows if r.get("trades", 0) > 0]
+                if enough:
+                    pick = max(enough, key=lambda r: r.get("netto_pct", 0))
             if pick is None:
                 return
             plan = {"strategie": pick["strategie"], "tijdschaal": pick["tijdschaal"], "params": {}, "selected_at": 0}
         key = f"{plan['strategie']} {plan['tijdschaal']}"
-        plan["bewezen"] = key in report.get("kandidaten", [])
+        plan["bewezen"] = key in tradable
         if now - plan.get("selected_at", 0) >= RESELECT_DAYS * DAY_MS or plan.get("sel_v") != SELECTION_VERSION:
             data = await self.hass.async_add_executor_job(self.m.load_all_candles)
             plan["params"] = await self.hass.async_add_executor_job(

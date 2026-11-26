@@ -1,5 +1,5 @@
 {
- "versie": "0.7.0",
+ "versie": "0.8.0",
  "bestanden": {
   "__init__.py": "bc69b14756c99601d2a1797b82745859755e62f53ec18a8133e4891a06d1f4ad",
   "api.py": "8ccf0e030a42735cccfe5ff3c0b5980d417b48237a701e69358e71e5cd62ef77",
@@ -10,24 +10,24 @@
   "brokers.py": "427a8048b09df39783cf5cdc1d770e491239866f543c9ccc656681e9d75a9e23",
   "button.py": "04285be3cfbf08c2cce94f8bc1e6fcfb4d2cabfe7f4f76403211f9c4c8ee0b66",
   "config_flow.py": "7f681ff50f8f301fd9a02866a725918ac963a9154c1ed6bafe8b5d92fbd3df38",
-  "const.py": "d6cc0bd959e5c350e4bbf9f7684561a04421d81ddedab4992e1a441751bdd440",
+  "const.py": "5df8af7796aeca6cad06c3fd4049322c23dca8272d88dbb6b50f1d9ab2787ca8",
   "engine.py": "2c703196e1e81207c6d2f2d9e316de52b2c43f91f473f67c888a86171c87708a",
   "entity.py": "6c4a60f6e8b70078eaa8def1edfea470d74dba72c5f62b8d5e14fb749e703550",
-  "frontend/bitvavo-bot-card.js": "e2f477054a2b9e0c316025d64091ac6f1e35006b27d9a4d318a57f74779b31e2",
-  "lab.py": "367a2b9957c06bde5bd7d1cdc0d254cc6e0d23bc6168cd34bb8be5d86d525ddd",
+  "frontend/bitvavo-bot-card.js": "bc56bcc18f47f3e01dc07b94e997e5500b208dc5ce9019f723eade928d33a0d8",
+  "lab.py": "8c599379e8370b6be216f072bca79d3aa666ab566965aee8a4fa27a535dc88dc",
   "manager.py": "1fc0c6755643c91b10edc54248d4eddeb41da0c8e2df87a9ea8a2061335a4b90",
-  "manifest.json": "d4dc3a40c199cddcaee30401ababb7396500224b702e8e50272b9570fd562bed",
+  "manifest.json": "f7189c8ad1554c5bae239c87e7a33d3273d9cc6aff67eea3347f7f5f6c0cb8db",
   "number.py": "db8daba78313fe67a26898f026982c2ce56c4776839d42a8a2a166eaa7147150",
   "sensor.py": "6e81c9b74a42f21eec1cdcdd05a9bcb0640f81546363c04eb78c86f2f7d97126",
   "services.yaml": "4ca80ab507001f415c40cb3ce55508e8a737e74d79469921e4f17663ff9ff924",
   "store.py": "a82badebdd19e9f57edb317d92348f2bc9d157e97fb29a54f634d4cb7ec6d8c1",
-  "strategies.py": "2c1e4812c6c973a33a9f1f85dd324289dc97d0bf0f9846377e71aae893832ba9",
+  "strategies.py": "85f26d4453c049f69f4a023833db094f0bd0c61f484d0b6a893b4df05da6f23b",
   "stream.py": "b94f0a5489994160b00062626f4ffe4ed451fc08507fe4941885136dca2dd81b",
   "strings.json": "0fb53fc4a4fc8201fb9bc828186988b635b4ecafe34bfd5b899825c0622e22ca",
   "switch.py": "5cd9f89174b3b0b291bc5e97b9b692fa2a325973cbba78d41ec706751b354058",
-  "trader.py": "df6a56f73ea1eb73f42f2ce6ef18298b8a450ad4fde3db9208a7f2a678ed3306",
+  "trader.py": "9bca4f2e023732e9199e10887561a270868e4acd695367751b72fa6a6136f472",
   "translations/en.json": "96710d2a5a3d1b476e71a04ad064b5f38dad0d34686c25b29b6ba90866d4f3d0",
   "translations/nl.json": "0fb53fc4a4fc8201fb9bc828186988b635b4ecafe34bfd5b899825c0622e22ca",
-  "websocket.py": "f63e3a7def198c26a44076586e8c36bc43640dd1ef8d78b238c89b55f9485011"
+  "websocket.py": "fc204c9ea8d6dcff1377e89431ce6952f2141183eea1bf43e1b0c8ccdb46294b"
  }
 }

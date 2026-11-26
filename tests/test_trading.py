@@ -147,7 +147,7 @@ async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_pa
         assert [m["market"] for m in o["markets"]] == list(NAMES)
         assert all(m["price"] and m["change"] is not None for m in o["markets"])
         assert o["book"]["gerealiseerd"] == 3.21 and o["limits"]["max_total"] == 500
-        assert len(o["lab"]["resultaten"]) == 17 and o["plan"]["strategie"] == plan["strategie"]
+        assert len(o["lab"]["resultaten"]) == 21 and o["plan"]["strategie"] == plan["strategie"]
         await ws.send_json({"id": 2, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": plan["tijdschaal"]})
         c = (await ws.receive_json())["result"]
         assert 100 < len(c["bars"]) <= 600 and len(c["bars"][0]) == 6
@@ -191,7 +191,7 @@ async def test_upgrade_backfills_history_reruns_lab_and_keeps_old_verdict(hass: 
         for market in NAMES:
             cov = m.coverage[market]
             assert cov["candles"] >= 24 * 420 - 1  # oudere historie én de laatste uren bijgehaald
-        assert m.report["preregistratie"] == "v2" and len(m.report["resultaten"]) == 17
+        assert m.report["preregistratie"] == "v3" and len(m.report["resultaten"]) == 21
         old = json.loads((tmp_path / "bitvavo_bot" / "lab_report_v1.json").read_text())
         assert old["beste"] == "grid 1h"
         meta = json.loads((tmp_path / "bitvavo_bot" / "meta.json").read_text())

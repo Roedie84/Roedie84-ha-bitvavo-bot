@@ -8,6 +8,9 @@ from custom_components.bitvavo_bot.strategies import (
     param_specs,
     run_strategy,
     target_vol_breakout,
+    leverage_table,
+    leveraged_return,
+    Trade,
     rsi,
     simulate_grid,
     simulate_signals,
@@ -101,6 +104,7 @@ def test_param_specs_are_the_preregistered_ones():
     assert {k: len(v) for k, v in g.items()} == {
         "donchian": 6, "ema_cross": 4, "rsi_dip": 6, "grid": 6,
         "rel_strength": 3, "donchian_regime": 6, "vol_breakout": 6,
+        "donchian_short": 6, "ema_cross_short": 4,
     }
     bars = make_bars(1500, seed=9, vol=0.015)
     ctx = Context({"BTC-EUR": bars, "X-EUR": bars})
@@ -118,3 +122,47 @@ def test_vol_breakout_enters_on_big_move_and_trails():
     t = target_vol_breakout(bars, n=20, k=2.0, m=2.0)
     assert t[39] == 0 and t[40] == 1 and t[44] == 1 and t[45] == 0
     assert target_vol_breakout(bars[:43], n=20, k=2.0, m=2.0) == t[:43]  # geen vooruitkijken
+
+
+def test_long_trade_records_gross_cost_and_worst_move():
+    bars = [(0, 100, 100, 100, 100, 1), (H, 100, 101, 100, 100, 1), (2 * H, 100, 103, 92, 101, 1), (3 * H, 110, 110, 110, 110, 1), (4 * H, 110, 110, 110, 110, 1)]
+    (t,) = simulate_signals(bars, [1, 1, 0, 0, 0], Costs())
+    assert t.side == 1 and t.gross == pytest.approx(0.10)
+    assert t.cost == pytest.approx(t.gross - t.net) and 0.005 < t.cost < 0.008
+    assert t.mae == pytest.approx(0.08)  # laagste koers 92 bij instap op 100
+
+
+def test_short_trade_profits_from_a_fall_and_pays_borrow():
+    day = 24 * H
+    bars = [(i * day, 100.0, 100.0, 100.0, 100.0, 1.0) for i in range(3)] + [(3 * day, 100.0, 106.0, 90.0, 90.0, 1.0), (4 * day, 90.0, 90.0, 90.0, 90.0, 1.0), (5 * day, 90.0, 90.0, 90.0, 90.0, 1.0)]
+    (t,) = simulate_signals(bars, [1, 1, 1, 0, 0, 0], Costs(), side=-1)
+    assert t.side == -1 and t.entry_ts == day and t.exit_ts == 4 * day
+    assert t.gross == pytest.approx(0.10)  # van 100 naar 90
+    assert t.mae == pytest.approx(0.06)  # onderweg even 6% tegen
+    traded = (100 * 0.9995 * 0.9975 - 90 * 1.0005 * 1.0025) / 100
+    assert t.net == pytest.approx(traded - 3 * 0.0005)  # 3 dagen leenkosten
+    up = [(i * day, 100.0 + 5 * i, 100.0 + 5 * i, 100.0 + 5 * i, 100.0 + 5 * i, 1.0) for i in range(6)]
+    (loss,) = simulate_signals(up, [1, 1, 1, 0, 0, 0], Costs(), side=-1)
+    assert loss.net < -0.14  # short in een stijgende markt verliest
+
+
+def test_leverage_scales_result_costs_and_can_liquidate():
+    c = Costs()
+    day = 24 * H
+    calm = Trade(0, 2 * day, 0.014, 1.0, "X", 1, 0.02, 0.006, 0.03)
+    assert leveraged_return(calm, 1, c) == (pytest.approx(0.014), False)
+    r3, liq = leveraged_return(calm, 3, c)
+    assert not liq and r3 == pytest.approx(3 * 0.014 - 0.0005 * 2 * 2)  # 2 dagen rente over 2x geleend
+    # 30% tegen: bij 3x (grens 28,3%) en 5x weg, bij 2x (grens 45%) nog niet
+    deep = Trade(0, day, 0.01, 1.0, "X", 1, 0.016, 0.006, 0.30)
+    assert leveraged_return(deep, 2, c)[1] is False
+    r, liq = leveraged_return(deep, 3, c)
+    assert liq and r < -0.9
+    assert leveraged_return(deep, 5, c) == (pytest.approx(-0.865), True)  # 5 x (15% + 2% + halve kosten)
+    assert leveraged_return(Trade(0, day, -0.5, 1.0, "X", 1, -0.5, 0.006, 0.9), 5, c)[0] >= -1.0
+    rows = leverage_table([calm, deep], c)
+    assert [r["hefboom"] for r in rows] == [1, 2, 3, 5]
+    assert [r["liquidaties"] for r in rows] == [0, 0, 1, 1]
+    assert rows[0]["gem_pct"] == pytest.approx(1.2) and rows[3]["slechtste_pct"] < -70
+    assert rows[2]["max_terugval_pct"] > 80
+    assert leverage_table([], c)[0]["trades"] == 0

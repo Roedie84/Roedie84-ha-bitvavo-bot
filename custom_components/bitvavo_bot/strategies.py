@@ -9,7 +9,7 @@ Regels die lookahead voorkomen:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
 # Bar = (ts_ms, open, high, low, close, volume), oplopend gesorteerd.
@@ -23,6 +23,7 @@ class Costs:
     taker: float = 0.0025
     maker: float = 0.0015
     slippage: float = 0.0005
+    borrow_daily: float = 0.0005  # leenkosten per dag over het geleende bedrag (margin/short)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,10 @@ class Trade:
     net: float  # netto rendement van deze trade na kosten (fractie)
     weight: float = 1.0  # deel van het kapitaal (grid: 1/levels)
     market: str = ""
+    side: int = 1  # 1 = long, -1 = short
+    gross: float = 0.0  # koersbeweging in het voordeel, vóór kosten
+    cost: float = 0.0  # handelskosten (fees + slippage) als fractie, zonder leenkosten
+    mae: float = 0.0  # grootste beweging tegen de positie in tijdens de looptijd (fractie)
 
 
 # ---------------------------------------------------------------- indicatoren
@@ -181,6 +186,35 @@ def target_vol_breakout(bars: Sequence[Bar], n: int, k: float, m: float) -> list
     return target
 
 
+def target_donchian_short(
+    bars: Sequence[Bar], entry_n: int, exit_n: int, regime: Callable[[int], bool], tf_ms: int
+) -> list[int]:
+    """Short: instappen bij een uitbraak onder de laagste low van entry_n bars, alleen
+    als de markt als geheel zwak is (regime uit); dekken boven de hoogste high van exit_n."""
+    highs = [b[2] for b in bars]
+    lows = [b[3] for b in bars]
+    target = [0] * len(bars)
+    pos = 0
+    for i in range(len(bars)):
+        close = bars[i][4]
+        if not pos and i >= entry_n and close < min(lows[i - entry_n : i]) and not regime(bars[i][0] + tf_ms):
+            pos = 1
+        elif pos and i >= exit_n and close > max(highs[i - exit_n : i]):
+            pos = 0
+        target[i] = pos
+    return target
+
+
+def target_ema_cross_short(bars: Sequence[Bar], fast: int, slow: int, regime: Callable[[int], bool], tf_ms: int) -> list[int]:
+    """Short zolang de snelle EMA onder de trage ligt én de markt als geheel zwak is."""
+    closes = [b[4] for b in bars]
+    f, s_ = ema(closes, fast), ema(closes, slow)
+    return [
+        1 if f[i] is not None and s_[i] is not None and f[i] < s_[i] and not regime(bars[i][0] + tf_ms) else 0
+        for i in range(len(bars))
+    ]
+
+
 def target_rel_strength(
     bars: Sequence[Bar],
     lookback: int,
@@ -197,26 +231,49 @@ def target_rel_strength(
     return out
 
 
-def simulate_signals(bars: Sequence[Bar], target: Sequence[int], costs: Costs) -> list[Trade]:
-    """Voer een 0/1-doelpositie uit met marktorders op de volgende open."""
+DAY_MS_F = 86_400_000.0
+
+
+def simulate_signals(bars: Sequence[Bar], target: Sequence[int], costs: Costs, side: int = 1) -> list[Trade]:
+    """Voer een 0/1-doelpositie uit met marktorders op de volgende open.
+
+    side=1: long (spot). side=-1: short op margin: verkopen bij instap, terugkopen
+    bij uitstap, met leenkosten over de looptijd."""
     trades: list[Trade] = []
     fee, slip = costs.taker, costs.slippage
     pos = False
-    entry_px = 0.0
+    raw_in = 0.0
     entry_ts = 0
+    worst = 0.0
     last = len(bars) - 1
+
+    def close(raw_out: float, exit_ts: int) -> None:
+        if side > 0:
+            net = _net(raw_in * (1 + slip), raw_out * (1 - slip), fee, fee)
+            gross = raw_out / raw_in - 1
+            mae = max(0.0, 1 - worst / raw_in)
+            trades.append(Trade(entry_ts, exit_ts, net, 1.0, "", 1, gross, gross - net, mae))
+        else:
+            sell, buy = raw_in * (1 - slip), raw_out * (1 + slip)
+            traded = (sell * (1 - fee) - buy * (1 + fee)) / raw_in
+            gross = 1 - raw_out / raw_in
+            borrow = costs.borrow_daily * (exit_ts - entry_ts) / DAY_MS_F
+            mae = max(0.0, worst / raw_in - 1)
+            trades.append(Trade(entry_ts, exit_ts, traded - borrow, 1.0, "", -1, gross, gross - traded, mae))
+
     for i in range(last):
         want = target[i]
         nxt = bars[i + 1]
+        if pos:
+            worst = min(worst, bars[i][3]) if side > 0 else max(worst, bars[i][2])
         if want and not pos:
-            pos, entry_px, entry_ts = True, nxt[1] * (1 + slip), nxt[0]
+            pos, raw_in, entry_ts, worst = True, nxt[1], nxt[0], nxt[1]
         elif not want and pos:
-            exit_px = nxt[1] * (1 - slip)
-            trades.append(Trade(entry_ts, nxt[0], _net(entry_px, exit_px, fee, fee)))
+            close(nxt[1], nxt[0])
             pos = False
     if pos:  # open positie afrekenen op de laatste slotkoers
-        exit_px = bars[last][4] * (1 - slip)
-        trades.append(Trade(entry_ts, bars[last][0], _net(entry_px, exit_px, fee, fee)))
+        worst = min(worst, bars[last][3]) if side > 0 else max(worst, bars[last][2])
+        close(bars[last][4], bars[last][0])
     return trades
 
 
@@ -239,22 +296,28 @@ def simulate_grid(
     closes = [b[4] for b in bars]
     ref = sma(closes, ref_n)
     weight = 1.0 / levels
-    open_lots: dict[int, tuple[float, int, int]] = {}  # level -> (koopprijs, ts, bar-index)
+    open_lots: dict[int, list] = {}  # level -> [koopprijs, ts, bar-index, laagste koers sindsdien]
     trades: list[Trade] = []
+
+    def done(lot: list, exit_ts: int, raw_out: float, net: float) -> None:
+        gross = raw_out / lot[0] - 1
+        trades.append(Trade(lot[1], exit_ts, net, weight, "", 1, gross, gross - net, max(0.0, 1 - lot[3] / lot[0])))
+
     for i in range(1, len(bars)):
         ts, o, h, l, c, _ = bars[i]
         # eerst verkopen (alleen lots uit eerdere bars)
         sold: set[int] = set()
         for k in list(open_lots):
-            buy_px, buy_ts, buy_i = open_lots[k]
+            lot = open_lots[k]
+            buy_px, buy_i = lot[0], lot[2]
+            lot[3] = min(lot[3], l)
             sell_px = buy_px * (1 + step)
             if h > sell_px:
-                trades.append(Trade(buy_ts, ts, _net(buy_px, sell_px, costs.maker, costs.maker), weight))
+                done(lot, ts, sell_px, _net(buy_px, sell_px, costs.maker, costs.maker))
                 del open_lots[k]
                 sold.add(k)
             elif i - buy_i >= max_hold:
-                exit_px = c * (1 - costs.slippage)
-                trades.append(Trade(buy_ts, ts, _net(buy_px, exit_px, costs.maker, costs.taker), weight))
+                done(lot, ts, c, _net(buy_px, c * (1 - costs.slippage), costs.maker, costs.taker))
                 del open_lots[k]
                 sold.add(k)
         r = ref[i - 1]
@@ -265,13 +328,57 @@ def simulate_grid(
                 continue  # een niveau wordt niet in dezelfde bar verkocht én opnieuw gekocht
             level_px = r * (1 - k * step)
             if l < level_px:
-                open_lots[k] = (min(level_px, o), ts, i)
+                px = min(level_px, o)
+                open_lots[k] = [px, ts, i, min(px, l)]
     last = bars[-1]
-    for buy_px, buy_ts, _ in open_lots.values():
-        exit_px = last[4] * (1 - costs.slippage)
-        trades.append(Trade(buy_ts, last[0], _net(buy_px, exit_px, costs.maker, costs.taker), weight))
+    for lot in open_lots.values():
+        done(lot, last[0], last[4], _net(lot[0], last[4] * (1 - costs.slippage), costs.maker, costs.taker))
     trades.sort(key=lambda t: t.entry_ts)
     return trades
+
+
+def leveraged_return(t: Trade, leverage: float, costs: Costs, maintenance: float = 0.05, liq_fee: float = 0.02) -> tuple[float, bool]:
+    """Rendement op de eigen inleg als deze trade met hefboom was gedaan.
+
+    Geeft (rendement, geliquideerd). Aannames (Bitvavo publiceert niet alles):
+    liquidatie zodra de koers (1/hefboom - maintenance) tegen je in gaat, 2%
+    liquidatiekosten over de hele positie, leenkosten per dag over het geleende deel."""
+    days = (t.exit_ts - t.entry_ts) / DAY_MS_F
+    borrowed = (leverage - 1) if t.side > 0 else leverage
+    if leverage > 1 or t.side < 0:
+        liq_move = 1 / leverage - maintenance
+        if liq_move > 0 and t.mae >= liq_move:
+            return -min(1.0, leverage * (liq_move + liq_fee + t.cost / 2)), True
+    return leverage * (t.gross - t.cost) - costs.borrow_daily * days * borrowed, False
+
+
+def leverage_table(trades: Sequence[Trade], costs: Costs, levels: Sequence[float] = (1, 2, 3, 5)) -> list[dict]:
+    """Wat dezelfde trades met hefboom hadden gedaan (op de eigen inleg)."""
+    rows = []
+    ordered = sorted(trades, key=lambda t: t.exit_ts)
+    for lev in levels:
+        rets, liqs, total, peak, dd = [], 0, 0.0, 0.0, 0.0
+        for t in ordered:
+            r, liq = leveraged_return(t, lev, costs)
+            rets.append(r)
+            liqs += liq
+            total += r * t.weight
+            peak = max(peak, total)
+            dd = max(dd, peak - total)
+        n = len(rets)
+        rows.append(
+            {
+                "hefboom": lev,
+                "trades": n,
+                "gem_pct": round(100 * sum(rets) / n, 3) if n else None,
+                "slechtste_pct": round(100 * min(rets), 1) if n else None,
+                "verlies_trades_pct": round(100 * sum(1 for r in rets if r < 0) / n, 1) if n else None,
+                "liquidaties": liqs,
+                "totaal_pct": round(100 * total, 1),
+                "max_terugval_pct": round(100 * dd, 1),
+            }
+        )
+    return rows
 
 
 # ----------------------------------------------------- vastgelegde hypotheses
@@ -315,6 +422,13 @@ def param_specs() -> dict[str, dict[str, dict]]:
         "vol_breakout": {
             f"k{k} stop{m}": {"n": 20, "k": k, "m": float(m)} for k in (1.5, 2.0, 2.5) for m in (2, 3)
         },
+        # ---- preregistratie v3: short op margin (alleen gesimuleerd) ----
+        "donchian_short": {
+            f"in{e}/uit{x}": {"entry_n": e, "exit_n": x} for e in (20, 55, 100) for x in (10, 20)
+        },
+        "ema_cross_short": {
+            f"{f}/{s}": {"fast": f, "slow": s} for f, s in ((10, 30), (20, 50), (20, 100), (50, 200))
+        },
     }
 
 
@@ -327,8 +441,11 @@ HYPOTHESES: tuple[tuple[str, tuple[str, ...], bool, str], ...] = (
     ("rel_strength", ("1d",), True, "v2"),
     ("donchian_regime", ("4h", "1d"), False, "v2"),
     ("vol_breakout", ("4h", "1d"), False, "v2"),
+    ("donchian_short", ("4h", "1d"), False, "v3"),
+    ("ema_cross_short", ("4h", "1d"), False, "v3"),
 )
 POOLED = {h[0] for h in HYPOTHESES if h[2]}
+SHORT = {"donchian_short", "ema_cross_short"}  # alleen te simuleren: Bitvavo biedt margin niet via de API
 
 
 def compute_target(strategy: str, kwargs: dict, market: str, bars: Sequence[Bar], ctx, tf_ms: int) -> list[int]:
@@ -336,6 +453,10 @@ def compute_target(strategy: str, kwargs: dict, market: str, bars: Sequence[Bar]
     ctx levert wat over markten heen nodig is (marktregime, ranglijst)."""
     if strategy == "donchian_regime":
         return target_donchian_regime(bars, regime=ctx.regime_at, tf_ms=tf_ms, **kwargs)
+    if strategy == "donchian_short":
+        return target_donchian_short(bars, regime=ctx.regime_at, tf_ms=tf_ms, **kwargs)
+    if strategy == "ema_cross_short":
+        return target_ema_cross_short(bars, regime=ctx.regime_at, tf_ms=tf_ms, **kwargs)
     if strategy == "vol_breakout":
         return target_vol_breakout(bars, **kwargs)
     if strategy == "rel_strength":
@@ -351,8 +472,9 @@ def run_strategy(
     if strategy == "grid":
         trades = simulate_grid(bars, costs=costs, **kwargs)
     else:
-        trades = simulate_signals(bars, compute_target(strategy, kwargs, market, bars, ctx, tf_ms), costs)
-    return [Trade(t.entry_ts, t.exit_ts, t.net, t.weight, market) for t in trades]
+        side = -1 if strategy in SHORT else 1
+        trades = simulate_signals(bars, compute_target(strategy, kwargs, market, bars, ctx, tf_ms), costs, side)
+    return [replace(t, market=market) for t in trades]
 
 
 def live_target(strategy: str, kwargs: dict, bars: Sequence[Bar]) -> list[int]:
@@ -368,4 +490,6 @@ STRATEGY_LABELS = {
     "rel_strength": "Relatieve sterkte (top 3, wekelijks)",
     "donchian_regime": "Trend – Donchian met marktfilter",
     "vol_breakout": "Volatiliteitsuitbraak",
+    "donchian_short": "Short – Donchian-uitbraak omlaag",
+    "ema_cross_short": "Short – EMA-kruising omlaag",
 }

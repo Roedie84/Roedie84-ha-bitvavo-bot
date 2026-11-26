@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
@@ -10,6 +11,8 @@ from .api import BitvavoApiError, BitvavoError, BitvavoNetworkError, BitvavoPriv
 from .engine import BrokerError
 from .strategies import Costs
 
+QUOTE_MAX_AGE = 120  # seconden dat een bied/laat-stand bruikbaar is
+DEPTH_PENALTY = 0.001  # toeslag als de order groter is dan wat er tegen de beste prijs ligt
 OPERATOR_ID = 8401  # vaste bot-id die Bitvavo bij elke order verlangt
 
 
@@ -17,13 +20,21 @@ class PaperBroker:
     """Vult orders tegen de laatst bekende koers, met dezelfde kosten als de backtest."""
 
     def __init__(
-        self, prices: dict[str, float], costs: Costs | None = None, extremes: dict[str, list[float]] | None = None
+        self,
+        prices: dict[str, float],
+        costs: Costs | None = None,
+        extremes: dict[str, list[float]] | None = None,
+        quotes: dict[str, dict] | None = None,
     ) -> None:
         self._prices = prices
         self._costs = costs or Costs()
         # laagste/hoogste koers sinds de vorige controle (uit de koersstroom), zodat
         # een korte uitschieter tussen twee controles niet gemist wordt
         self._extremes = extremes if extremes is not None else {}
+        self._quotes = quotes if quotes is not None else {}
+
+    def set_costs(self, costs: Costs) -> None:
+        self._costs = costs
 
     async def price(self, market: str) -> float | None:
         return self._prices.get(market)
@@ -34,14 +45,28 @@ class PaperBroker:
             raise BrokerError(f"geen koers voor {market}")
         return px
 
+    def _fill_price(self, market: str, side: str, base_amount: float | None, quote: float | None) -> float:
+        """Uitvoeringsprijs van een marktorder: de echte bied- of laatprijs als die
+        vers bekend is, anders de laatste koers met de vaste slippage. Is de order
+        groter dan wat er tegen de beste prijs ligt, dan komt er een toeslag bij."""
+        px = self._px(market)
+        q = self._quotes.get(market)
+        if not q or time.time() - q.get("t", 0) > QUOTE_MAX_AGE or q["bid"] <= 0 or q["ask"] < q["bid"]:
+            return px * (1 + self._costs.slippage) if side == "buy" else px * (1 - self._costs.slippage)
+        best = q["ask"] if side == "buy" else q["bid"]
+        size = q.get("ask_size" if side == "buy" else "bid_size")
+        wanted = base_amount if base_amount is not None else (quote or 0) / best
+        thin = size is not None and wanted > size
+        return best * (1 + DEPTH_PENALTY) if side == "buy" and thin else best * (1 - DEPTH_PENALTY) if thin else best
+
     async def market_buy(self, market: str, quote: float) -> dict:
         c = self._costs
         gross = quote / (1 + c.taker)
-        return {"amount": gross / (self._px(market) * (1 + c.slippage)), "quote": gross, "fee": gross * c.taker}
+        return {"amount": gross / self._fill_price(market, "buy", None, gross), "quote": gross, "fee": gross * c.taker}
 
     async def market_sell(self, market: str, amount: float) -> dict:
         c = self._costs
-        gross = amount * self._px(market) * (1 - c.slippage)
+        gross = amount * self._fill_price(market, "sell", amount, None)
         return {"amount": amount, "quote": gross, "fee": gross * c.taker}
 
     async def limit_buy(self, market: str, price: float, quote: float) -> dict:
@@ -109,6 +134,21 @@ class LiveBroker:
         except BitvavoError as err:
             raise BrokerError(str(err)) from err
         return float(rows[0]["available"]) if rows else 0.0
+
+    async def holdings(self) -> dict[str, float]:
+        """Wat er echt op het account staat (vrij + in orders), per munt."""
+        try:
+            rows = await self._c.request("GET", "/balance")
+        except BitvavoError as err:
+            raise BrokerError(str(err)) from err
+        return {r["symbol"]: float(r.get("available") or 0) + float(r.get("inOrder") or 0) for r in rows}
+
+    async def fees(self) -> dict:
+        try:
+            data = await self._c.request("GET", "/account/fees")
+        except BitvavoError as err:
+            raise BrokerError(str(err)) from err
+        return {"taker": float(data["taker"]), "maker": float(data["maker"]), "tier": data.get("tier")}
 
     async def _base_available(self, market: str) -> float:
         rows = await self._c.request("GET", "/balance", {"symbol": self._info(market)["base"]})

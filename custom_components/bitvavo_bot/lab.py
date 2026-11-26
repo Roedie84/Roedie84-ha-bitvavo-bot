@@ -265,6 +265,57 @@ def _compound(trades: Sequence[Trade]) -> float:
     return eq - 1
 
 
+def _oos_trades(strat, params, is_pooled, usable, ctx, tf_ms, cfg) -> tuple[list[Trade], dict[str, int]]:
+    """Out-of-sample trades van één hypothese (walk-forward), voor alle bruikbare markten."""
+    pooled: list[Trade] = []
+    chosen_all: dict[str, int] = {}
+    if is_pooled and usable:
+        # één keuze voor alle markten samen (de strategie kiest zelf tussen markten)
+        per_param: dict[str, list[Trade]] = {name: [] for name in params}
+        for market, bars in usable.items():
+            for name, kw in params.items():
+                per_param[name] += run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs)
+        start = min(b[0][0] for b in usable.values())
+        end = max(b[-1][0] for b in usable.values())
+        return walk_forward(per_param, folds(start, end, cfg), cfg)
+    for market, bars in usable.items():
+        per_param = {
+            name: run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs) for name, kw in params.items()
+        }
+        oos, chosen = walk_forward(per_param, folds(bars[0][0], bars[-1][0], cfg), cfg)
+        for k, v in chosen.items():
+            chosen_all[k] = chosen_all.get(k, 0) + v
+        pooled.extend(oos)
+    return pooled, chosen_all
+
+
+def recent_performance(
+    data: Mapping[str, Sequence[Bar]], strategy: str, timeframe: str, days: int = 365, cfg: LabConfig | None = None
+) -> dict:
+    """Houdbaarheid: hoe deed deze hypothese het out-of-sample in de laatste `days` dagen?
+
+    Zelfde walk-forward als het Lab, maar alleen de recente trades tellen. Dit is
+    bewaking, geen nieuwe toets: het kan het slot alleen dichthouden, niet openen.
+    """
+    cfg = cfg or LabConfig()
+    data = {m: b for m, b in data.items() if len(b) > 0}
+    is_pooled = strategy in POOLED
+    factor = TIMEFRAMES[timeframe]
+    tf_bars = {m: resample(b, factor) for m, b in data.items()}
+    usable = {m: b for m, b in tf_bars.items() if len(b) >= 300 and folds(b[0][0], b[-1][0], cfg)}
+    if not usable:
+        return {"trades": 0, "netto_pct": None, "dagen": days}
+    trades, _ = _oos_trades(strategy, param_specs()[strategy], is_pooled, usable, Context(data), factor * 3_600_000, cfg)
+    since = max(b[-1][0] for b in usable.values()) - days * DAY_MS
+    recent = [t.net for t in trades if t.entry_ts >= since]
+    return {
+        "trades": len(recent),
+        "netto_pct": round(_mean(recent) * 100, 3) if recent else None,
+        "winst_pct_trades": round(100 * sum(1 for x in recent if x > 0) / len(recent), 1) if recent else None,
+        "dagen": days,
+    }
+
+
 def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> dict:
     """Draai het volledige Lab. data: markt -> uurbars (oplopend)."""
     cfg = cfg or LabConfig()
@@ -301,25 +352,7 @@ def run_lab(data: Mapping[str, Sequence[Bar]], cfg: LabConfig | None = None) -> 
                     oos_range += [fl[0][1], fl[-1][2]]
             first = False
 
-            if is_pooled and usable:
-                # één keuze voor alle markten samen (de strategie kiest zelf tussen markten)
-                per_param: dict[str, list[Trade]] = {name: [] for name in params}
-                for market, bars in usable.items():
-                    for name, kw in params.items():
-                        per_param[name] += run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs)
-                start = min(b[0][0] for b in usable.values())
-                end = max(b[-1][0] for b in usable.values())
-                pooled, chosen_all = walk_forward(per_param, folds(start, end, cfg), cfg)
-            else:
-                for market, bars in usable.items():
-                    per_param = {
-                        name: run_strategy(strat, kw, market, bars, ctx, tf_ms, cfg.costs)
-                        for name, kw in params.items()
-                    }
-                    oos, chosen = walk_forward(per_param, folds(bars[0][0], bars[-1][0], cfg), cfg)
-                    for k, v in chosen.items():
-                        chosen_all[k] = chosen_all.get(k, 0) + v
-                    pooled.extend(oos)
+            pooled, chosen_all = _oos_trades(strat, params, is_pooled, usable, ctx, tf_ms, cfg)
 
             pooled = sorted(pooled, key=lambda t: t.entry_ts)
             pooled_excess = [excess(t, drifts.get(t.market, 0.0)) for t in pooled]

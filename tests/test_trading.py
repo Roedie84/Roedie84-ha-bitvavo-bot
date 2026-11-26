@@ -318,3 +318,115 @@ async def test_entities_unavailable_until_state_is_loaded(hass: HomeAssistant, t
         await hass.async_block_till_done()
         for eid in ("sensor.bitvavo_bot_paper_resultaat", "switch.bitvavo_bot_live", "number.bitvavo_bot_max_totaal"):
             assert hass.states.get(eid).state == "unavailable"
+
+
+async def test_health_fees_notifications_reconcile_and_export(hass: HomeAssistant, tmp_path, hass_ws_client):
+    from homeassistant.data_entry_flow import FlowResultType
+
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    sent = []
+
+    async def fake_notify(call):
+        sent.append((call.data["title"], call.data["message"]))
+
+    hass.services.async_register("notify", "telefoon", fake_notify)
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        trader = entry.runtime_data.trader
+
+        # houdbaarheid is berekend voor het gekozen plan en telt mee in het slot
+        key = f"{trader.plan['strategie']} {trader.plan['tijdschaal']}"
+        assert trader.health["plan"] == key and trader.health["dagen"] == 365 and "checked_at" in trader.health
+        lock = trader.lock_status()
+        assert "recent_positief" in lock["checks"] and lock["houdbaarheid"] == trader.health
+        trader.health = {**trader.health, "trades": 50, "netto_pct": 0.4}
+        assert trader.health_ok()
+        trader.health["netto_pct"] = -0.1
+        assert not trader.health_ok()
+        trader.health = {**trader.health, "netto_pct": 0.4, "trades": 5}
+        assert not trader.health_ok()  # te weinig trades om iets te zeggen
+        trader.health = {**trader.health, "trades": 50, "plan": "iets anders"}
+        assert not trader.health_ok()
+        assert hass.states.get("sensor.bitvavo_bot_live_slot").attributes["recent_positief"] in (True, False)
+
+        # zonder sleutel: aanname blijft staan
+        assert trader.fees is None and trader.paper.exit_cost == pytest.approx(0.003)
+
+        # opties: meldingsdienst kiezen
+        flow = await hass.config_entries.options.async_init(entry.entry_id)
+        assert flow["type"] is FlowResultType.FORM
+        done = await hass.config_entries.options.async_configure(
+            flow["flow_id"], {"notify_service": "notify.telefoon", "daily_summary": True}
+        )
+        assert done["type"] is FlowResultType.CREATE_ENTRY
+        await hass.async_block_till_done(wait_background_tasks=True)
+        trader = entry.runtime_data.trader
+        assert entry.options["notify_service"] == "notify.telefoon"
+
+        # dagstop -> direct een melding, één keer
+        await trader._check_events()
+        trader.paper.book["day_paused"] = True
+        await trader._check_events()
+        await trader._check_events()
+        await hass.async_block_till_done()
+        assert [t for t, _ in sent] == ["Bitvavo Bot – dagstop (paper)"]
+        trader.paper.book["last_error"] = "24-11 10:00 BTC-EUR: iets mis"
+        await trader._check_events()
+        await hass.async_block_till_done()
+        assert sent[-1][0] == "Bitvavo Bot – fout (paper)"
+
+        # dagoverzicht
+        await trader.async_daily_summary()
+        await hass.async_block_till_done()
+        title, body = sent[-1]
+        assert title == "Bitvavo Bot – dagoverzicht" and body.startswith("Paper: € ") and "slot: op slot" in body
+        hass.config_entries.async_update_entry(entry, options={"notify_service": "notify.telefoon", "daily_summary": False})
+        n = len(sent)
+        await trader.async_daily_summary()
+        await hass.async_block_till_done()
+        assert len(sent) == n
+
+        # echte kosten + saldo-afstemming met een (nagebootste) beurs
+        (tmp_path / "secrets.yaml").write_text("bitvavo_api_key: SLEUTEL-GEHEIM-1\nbitvavo_api_secret: GEHEIM-WOORD-2\n")
+        ex = FakeExchange(eur=900)
+        with patch("custom_components.bitvavo_bot.api.BitvavoPrivateClient.request", lambda self, *a, **k: ex.request(*a, **k)):
+            trader.fees = None
+            await trader._refresh_fees()
+            assert trader.fees["taker"] == 0.002 and trader.fees["tier"] == "1"
+            assert trader.paper.exit_cost == pytest.approx(0.0025)
+            buy = await trader.paper.broker.market_buy("BTC-EUR", 100.2)
+            assert buy["fee"] == pytest.approx(0.2)
+
+            trader.override = True
+            await trader.async_set_live(True)
+            await hass.async_block_till_done()
+            assert sent[-1][0] == "Bitvavo Bot – LIVE aan"
+            book = trader.live_engine.book
+            mk = lambda m, amount: {"id": m, "market": m, "amount": amount, "cost": 25.0, "entry_px": 1.0, "entry_ts": 1, "entry_bar": 0, "level": None}
+            book["positions"] = [mk("BTC-EUR", 1.0), mk("ETH-EUR", 2.0), mk("SOL-EUR", 4.0)]
+            ex.coins = {"BTC": 1.0, "ETH": 1.5}  # ETH deels weg, SOL helemaal weg
+            await trader._reconcile_live()
+            await hass.async_block_till_done()
+            assert [p["market"] for p in book["positions"]] == ["BTC-EUR", "ETH-EUR"]
+            assert book["trades"][-1]["reden"] == "buiten de bot om verkocht" and book["realized"] == -25.0
+            titles = [t for t, _ in sent[-2:]]
+            assert set(titles) == {"Bitvavo Bot – saldo wijkt af", "Bitvavo Bot – positie verdwenen"}
+            n = len(sent)
+            await trader._reconcile_live()  # dezelfde afwijking niet elk uur opnieuw melden
+            await hass.async_block_till_done()
+            assert len(sent) == n
+            book["positions"] = []
+
+        # vergelijking met de markt en export
+        trader.bench = {"BTC-EUR": 100.0, "ETH-EUR": 50.0}
+        trader.prices.update({"BTC-EUR": 110.0, "ETH-EUR": 45.0})
+        assert trader.overview()["markt_sinds_start_pct"] == 0.0  # +10% en -10%
+        trader.paper.book["trades"] = [{"markt": "BTC-EUR", "in": 1, "uit": 2, "inzet": 25.0, "resultaat": 1.0, "pct": 4.0, "reden": "signaal"}] * 12
+        ws = await hass_ws_client(hass)
+        await ws.send_json({"id": 9, "type": "bitvavo_bot/trades", "book": "paper"})
+        res = (await ws.receive_json())["result"]
+        assert res["book"] == "paper" and len(res["trades"]) == 12  # alle trades, niet alleen de laatste tien
+        await ws.send_json({"id": 10, "type": "bitvavo_bot/overview"})
+        o = (await ws.receive_json())["result"]
+        assert o["notify"] is True and o["fees"]["taker"] == 0.002 and "spread_pct" in o["markets"][0]
+        assert "gem_in_markt" in o["book"] and o["lock"]["houdbaarheid"]["dagen"] == 365

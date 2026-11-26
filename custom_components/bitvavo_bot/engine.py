@@ -20,7 +20,7 @@ from .strategies import Bar, live_target, sma
 
 _LOGGER = logging.getLogger(__name__)
 
-MAX_TRADES_KEPT = 500
+MAX_TRADES_KEPT = 5000
 EXIT_COST = 0.003  # taker + slippage, voor de waardering van open posities
 
 
@@ -72,6 +72,7 @@ class Engine:
         self.book = book
         self.broker = broker
         self.name = name
+        self.exit_cost = EXIT_COST  # taker + slippage; wordt bijgesteld op de echte kosten
 
     # ----------------------------------------------------------------- inzicht
 
@@ -86,7 +87,7 @@ class Engine:
         for p in self.book["positions"]:
             px = prices.get(p["market"])
             if px:
-                total += p["amount"] * px * (1 - EXIT_COST) - p["cost"]
+                total += p["amount"] * px * (1 - self.exit_cost) - p["cost"]
         return total
 
     def pnl(self, prices: dict[str, float]) -> float:
@@ -110,15 +111,20 @@ class Engine:
             "laatste_fout": b["last_error"],
             "posities": [self._position_row(p, prices) for p in b["positions"]],
             "laatste_trades": b["trades"][-10:][::-1],
+            "gem_in_markt": self._avg_in_market(),
             **({} if light else {"verloop": b.get("equity", [])[-720:]}),
         }
+
+    def _avg_in_market(self) -> float | None:
+        vals = [e[2] for e in self.book.get("equity", []) if len(e) > 2]
+        return round(sum(vals) / len(vals), 2) if vals else None
 
     def _position_row(self, p: dict, prices: dict[str, float]) -> dict:
         px = prices.get(p["market"])
         target = next(
             (o["price"] for o in self.book["orders"] if o["side"] == "sell" and o.get("pos_id") == p["id"]), None
         )
-        result = p["amount"] * px * (1 - EXIT_COST) - p["cost"] if px else None
+        result = p["amount"] * px * (1 - self.exit_cost) - p["cost"] if px else None
         return {
             "markt": p["market"],
             "sinds": p["entry_ts"],
@@ -205,10 +211,37 @@ class Engine:
         )
         del b["trades"][:-MAX_TRADES_KEPT]
 
+    def drop_position(self, pos: dict, reason: str) -> None:
+        """Positie uit het boek halen zonder verkoop (bv. buiten de bot om verkocht).
+        De inzet telt als verlies, want de opbrengst is onbekend."""
+        b = self.book
+        if not any(p["id"] == pos["id"] for p in b["positions"]):
+            return
+        b["positions"] = [p for p in b["positions"] if p["id"] != pos["id"]]
+        b["orders"] = [o for o in b["orders"] if o.get("pos_id") != pos["id"]]
+        b["realized"] -= pos["cost"]
+        b["trade_count"] += 1
+        b["trades"].append(
+            {
+                "markt": pos["market"],
+                "in": pos["entry_ts"],
+                "uit": int(time.time() * 1000),
+                "inzet": round(pos["cost"], 2),
+                "resultaat": round(-pos["cost"], 2),
+                "pct": -100.0,
+                "reden": reason,
+            }
+        )
+        del b["trades"][:-MAX_TRADES_KEPT]
+
     async def _sell_market(self, pos: dict, reason: str) -> None:
         try:
             fill = await self.broker.market_sell(pos["market"], pos["amount"])
         except BrokerError as err:
+            if "te klein" in str(err):
+                # restje dat de beurs niet meer aanneemt: afboeken in plaats van elk uur opnieuw proberen
+                self.drop_position(pos, "restant te klein om te verkopen")
+                return
             self._error(f"verkoop {pos['market']}: {err}")
             return
         if fill:
@@ -355,7 +388,8 @@ class Engine:
         eq = self.book.setdefault("equity", [])
         if eq and now_ms - eq[-1][0] < 3_300_000:
             return
-        eq.append([now_ms, round(self.pnl(prices), 2)])
+        in_market = round(sum(p["cost"] for p in self.book["positions"]), 2)
+        eq.append([now_ms, round(self.pnl(prices), 2), in_market])
         if len(eq) > 3000:
             self.book["equity"] = eq[:1500:2] + eq[1500:]
 

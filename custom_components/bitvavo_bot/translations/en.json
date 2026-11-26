@@ -13,5 +13,17 @@
     "abort": {
       "single_instance_allowed": "Bitvavo Bot is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Bitvavo Bot",
+        "description": "Where notifications go. Leave empty for none.",
+        "data": {
+          "notify_service": "Notify service",
+          "daily_summary": "Daily summary at 18:00"
+        }
+      }
+    }
   }
 }

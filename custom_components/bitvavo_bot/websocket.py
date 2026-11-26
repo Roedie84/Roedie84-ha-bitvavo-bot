@@ -20,6 +20,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_overview)
     websocket_api.async_register_command(hass, ws_chart)
     websocket_api.async_register_command(hass, ws_stream)
+    websocket_api.async_register_command(hass, ws_trades)
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/overview"})
@@ -84,3 +85,16 @@ def ws_stream(hass, connection, msg) -> None:
     connection.subscriptions[msg["id"]] = m.trader.stream_subscribe(forward)
     connection.send_result(msg["id"])
     m.trader.push_live()
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/trades", vol.Optional("book", default="paper"): vol.In(["paper", "live"])}
+)
+@callback
+def ws_trades(hass, connection, msg) -> None:
+    """Alle bewaarde trades van een boek (voor de CSV-export)."""
+    m = _manager(hass)
+    if m is None:
+        connection.send_error(msg["id"], "not_loaded", "Bitvavo Bot is niet geladen")
+        return
+    connection.send_result(msg["id"], {"book": msg["book"], "trades": m.trader.all_trades(msg["book"])})

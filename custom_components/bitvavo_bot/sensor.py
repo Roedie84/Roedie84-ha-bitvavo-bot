@@ -126,7 +126,12 @@ class LockSensor(_Base):
     @property
     def extra_state_attributes(self) -> dict:
         s = self._m.trader.lock_status()
-        return {**s["checks"], "paper_dagen": s["paper_dagen"], "nodig_dagen": s["nodig_dagen"]}
+        return {
+            **s["checks"],
+            "paper_dagen": s["paper_dagen"],
+            "nodig_dagen": s["nodig_dagen"],
+            "houdbaarheid": s["houdbaarheid"],
+        }
 
 
 class ResultSensor(_Base):

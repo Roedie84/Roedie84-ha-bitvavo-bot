@@ -13,5 +13,17 @@
     "abort": {
       "single_instance_allowed": "Bitvavo Bot is al ingesteld."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Bitvavo Bot",
+        "description": "Waar meldingen heen gaan. Leeg laten = geen meldingen op je telefoon.",
+        "data": {
+          "notify_service": "Meldingsdienst (bv. notify.mobile_app_…)",
+          "daily_summary": "Dagoverzicht om 18:00"
+        }
+      }
+    }
   }
 }

@@ -12,6 +12,7 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 | 0.4 | Preregistratie v2: 3 nieuwe strategieën (relatieve sterkte, trend met marktfilter, volatiliteitsuitbraak), 4 jaar historie, automatisch overstappen op een Lab-kandidaat |
 | 0.5 | Grafiek met muisfuncties: kruisdraad, uitlezing per candle, zoomen, slepen |
 | 0.6 | Directe koersstroom van Bitvavo: koersen per transactie, lopende candle in de grafiek, scherm ververst per seconde, paper-orders elke 5 s getoetst |
+| 0.7 | Houdbaarheidscheck als vierde slotvoorwaarde, paper met echte bied-laatprijzen, meldingen (direct + dagoverzicht 18:00), saldo-afstemming in live, vergelijking met de markt, CSV-export, echte kosten van je account |
 | 0.6.1 | Controle: cycli kunnen niet meer overlappen (geen dubbele orders), geen valse nullen na herstart, slot en strategiewissel alleen voor beheerders, melding als live na herstart niet hervat |
 
 ## Hoe het werkt
@@ -27,8 +28,10 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 
 ## Live en het slot
 
-Live gaat pas open als alle drie waar zijn: het Lab heeft een kandidaat, paper
-draait 28 dagen, en paper staat netto in de plus. Overbruggen kan alleen met de
+Live gaat pas open als alle vier waar zijn: het Lab heeft een kandidaat, paper
+draait 28 dagen, paper staat netto in de plus, en de gekozen strategie was ook
+over de laatste 12 maanden (out-of-sample) netto positief met minstens 20 trades.
+Die laatste controle wordt elke 30 dagen ververst en kan het slot alleen dichthouden. Overbruggen kan alleen met de
 service `bitvavo_bot.override_lock` en de letterlijke bevestiging.
 
 Voor live leest de bot `bitvavo_api_key` en `bitvavo_api_secret` uit
@@ -39,6 +42,13 @@ dagverlies (daarna die dag geen nieuwe aankopen) en de noodstop (alles
 annuleren, alles verkopen, live uit, handel gepauzeerd).
 
 Margin/hefboom wordt niet gebruikt: Bitvavo biedt margin niet via de API aan.
+
+## Meldingen
+
+Instellingen → Apparaten & diensten → Bitvavo Bot → Configureren: kies een
+meldingsdienst (bv. `notify.mobile_app_…`). Direct gemeld worden: dagstop, fouten,
+live aan, noodstop, live-aankopen en -verkopen, en afwijkingen tussen het boek en
+je Bitvavo-saldo. Om 18:00 volgt een dagoverzicht (uit te zetten).
 
 ## Installatie
 

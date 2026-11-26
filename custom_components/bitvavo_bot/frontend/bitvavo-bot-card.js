@@ -7,7 +7,7 @@ const LIMITS = [
   ["max_total", "number.bitvavo_bot_max_totaal", "Max totaal ingezet"],
   ["max_day_loss", "number.bitvavo_bot_max_dagverlies", "Max dagverlies"],
 ];
-const CHECKS = { lab_kandidaat: "Lab heeft een kandidaat", paper_28_dagen: "Paper draait 28 dagen", paper_positief: "Paper netto positief" };
+const CHECKS = { lab_kandidaat: "Lab heeft een kandidaat", paper_28_dagen: "Paper draait 28 dagen", paper_positief: "Paper netto positief", recent_positief: "Laatste 12 maanden positief" };
 const NAMES = { donchian: "Trend – Donchian-uitbraak", ema_cross: "Trend – EMA-kruising", rsi_dip: "Mean-reversion – RSI-dip", grid: "Grid rond gemiddelde", rel_strength: "Relatieve sterkte (top 3)", donchian_regime: "Trend – Donchian met marktfilter", vol_breakout: "Volatiliteitsuitbraak" };
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -196,6 +196,7 @@ class BitvavoBotCard extends HTMLElement {
     else if (a === "override") s.modal = "override";
     else if (a === "close") s.modal = null;
     else if (a === "dismiss") s.error = null;
+    else if (a === "csv") return this.exportCsv();
     else if (a === "trading") return this.call("switch", o.trading ? "turn_off" : "turn_on", { entity_id: E.trading });
     else if (a === "go-live") return this.call("switch", "turn_on", { entity_id: E.live });
     else if (a === "go-paper") return this.call("switch", "turn_off", { entity_id: E.live });
@@ -203,6 +204,22 @@ class BitvavoBotCard extends HTMLElement {
     else if (a === "go-restore") return this.call("bitvavo_bot", "restore_lock", {});
     else if (a === "go-override") return this.call("bitvavo_bot", "override_lock", { bevestiging: this.shadowRoot.querySelector("#phrase").value });
     this.render();
+  }
+
+  async exportCsv() {
+    try {
+      const book = this.o.mode === "live" ? "live" : "paper";
+      const res = await this._hass.callWS({ type: "bitvavo_bot/trades", book });
+      const iso = (ms) => new Date(ms).toISOString();
+      const num = (v) => String(v ?? "").replace(".", ",");
+      const lines = ["markt;gekocht;verkocht;inzet_eur;resultaat_eur;resultaat_pct;reden"].concat(
+        res.trades.map((t) => [t.markt, iso(t.in), iso(t.uit), num(t.inzet), num(t.resultaat), num(t.pct), '"' + String(t.reden || "").replace(/"/g, '""') + '"'].join(";")));
+      const url = URL.createObjectURL(new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = `bitvavo-bot-trades-${book}-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) { this.s.error = (e && e.message) || "Export mislukt"; this.render(); }
   }
 
   modalHtml() {
@@ -278,9 +295,9 @@ class BitvavoBotCard extends HTMLElement {
       return `<tr data-a="market" data-v="${esc(p.markt)}" title="Toon ${esc(p.markt)} in de grafiek"><td><b>${esc(p.markt)}</b>${p.niveau ? `<div class="sub2">gridniveau ${p.niveau}</div>` : ""}</td><td>${two(when(p.sinds), nf(p.aantal, 4) + " stuks")}</td><td>${price(p.koers_in)}</td><td>${two(price(p.koers_nu), p.koers_pct == null ? "" : pct(p.koers_pct), col(p.koers_pct))}</td><td style="min-width:170px">${goal}</td><td>${two(eur(p.inzet), "waarde " + eur(p.waarde))}</td><td>${two(eur(p.resultaat, true), pct(p.pct), col(p.resultaat))}</td></tr>`;
     }, ["Markt", "Gekocht", "Koers in", "Koers nu", "Verkoopdoel", "Inzet", "Resultaat na kosten"], "Geen open posities.") + (b.posities.length ? `<div class="note">Resultaat is wat je overhoudt als je nu verkoopt, na aan- en verkoopkosten (samen ruim 0,5%). Een verse positie begint daarom licht in de min, ook als de koers niet bewoog.</div>` : "");
     else if (s.tab === "ord") table = rows(o.orders, (r) => `<tr data-a="market" data-v="${esc(r.markt)}"><td><b>${esc(r.markt)}</b>${r.niveau ? `<div class="sub2">gridniveau ${r.niveau}</div>` : ""}</td><td style="color:${r.soort === "Kooplimiet" ? UP : DOWN_TXT}">${esc(r.soort)}</td><td>${price(r.limiet)}</td><td>${price(r.koers_nu)}</td><td>${r.afstand_pct == null ? "–" : pct(r.afstand_pct)}</td><td>${eur(r.bedrag)}</td></tr>`, ["Markt", "Soort", "Limiet", "Koers nu", "Afstand tot limiet", "Bedrag"], "Geen orders in het boek.") + (o.orders.length ? `<div class="note">Een kooplimiet wordt pas uitgevoerd als de koers tot de limiet daalt; een verkooplimiet als de koers ertoe stijgt.</div>` : "");
-    else if (s.tab === "tr") table = rows(b.laatste_trades, (t) => `<tr><td><b>${esc(t.markt)}</b></td><td>${when(t.in)}</td><td>${when(t.uit)}</td><td>${eur(t.inzet)}</td><td style="color:${col(t.resultaat)}">${eur(t.resultaat, true)}</td><td style="color:${col(t.resultaat)}">${pct(t.pct)}</td><td>${esc(t.reden)}</td></tr>`, ["Markt", "In", "Uit", "Inzet", "Resultaat", "%", "Reden"], "Nog geen afgesloten trades.");
+    else if (s.tab === "tr") table = rows(b.laatste_trades, (t) => `<tr><td><b>${esc(t.markt)}</b></td><td>${when(t.in)}</td><td>${when(t.uit)}</td><td>${eur(t.inzet)}</td><td style="color:${col(t.resultaat)}">${eur(t.resultaat, true)}</td><td style="color:${col(t.resultaat)}">${pct(t.pct)}</td><td>${esc(t.reden)}</td></tr>`, ["Markt", "In", "Uit", "Inzet", "Resultaat", "%", "Reden"], "Nog geen afgesloten trades.") + (b.trades ? `<div class="note"><button class="pill" data-a="csv">Alle ${b.trades} trades downloaden (CSV)</button></div>` : "");
     else table = rows(o.lab.resultaten, (r) => `<tr><td>${r.geslaagd ? "✓" : "✕"} ${esc(NAMES[r.strategie] || r.strategie)} <span style="color:${MUTED}">${esc(r.versie || "")}</span></td><td>${esc(r.tijdschaal)}</td><td>${r.trades}</td><td style="color:${col(r.netto_pct)}">${pct(r.netto_pct, 3)}</td><td style="color:${col(r.alpha_pct)}">${pct(r.alpha_pct, 3)}</td><td>${nf(r.p, 4)}</td><td>${r.markten_positief_pct}%</td></tr>`, ["Hypothese", "Tijd", "Trades", "Netto/trade", "Alpha", "p", "Markten +"], "Het Lab heeft nog niet gedraaid.");
-    const checks = Object.entries(CHECKS).map(([k, label]) => { const ok = lock.checks[k]; const extra = k === "paper_28_dagen" ? ` <span style="color:${MUTED}">(${lock.paper_dagen} van ${lock.nodig_dagen})</span>` : ""; return `<div class="chk"><span style="color:${ok ? UP : DOWN_TXT};font-weight:700">${ok ? "✓" : "✕"}</span><span>${label}${extra}</span></div>`; }).join("");
+    const checks = Object.entries(CHECKS).map(([k, label]) => { const ok = lock.checks[k]; const hb = lock.houdbaarheid; const extra = k === "paper_28_dagen" ? ` <span style="color:${MUTED}">(${lock.paper_dagen} van ${lock.nodig_dagen})</span>` : k === "recent_positief" ? ` <span style="color:${MUTED}">(${hb && hb.netto_pct != null ? pct(hb.netto_pct, 2) + " per trade, " + hb.trades + " trades" : "nog niet berekend"})</span>` : ""; return `<div class="chk"><span style="color:${ok ? UP : DOWN_TXT};font-weight:700">${ok ? "✓" : "✕"}</span><span>${label}${extra}</span></div>`; }).join("");
     const lockBtn = lock.state === "overbrugd" ? `<button class="ghost" data-a="go-restore">Slot herstellen</button>` : lock.state === "op slot" ? `<button class="ghost" data-a="override">Slot overbruggen…</button>` : "";
     const lockState = { "op slot": ["Op slot", "warn"], open: ["Open", "ok"], overbrugd: ["Overbrugd", "bad"] }[lock.state] || [lock.state, ""];
 
@@ -295,8 +312,8 @@ class BitvavoBotCard extends HTMLElement {
   <div class="card kpi"><div class="l">Ingezet</div><div class="v">${eur(b.ingezet)}</div><div class="bar"><i style="width:${used}%"></i></div><div class="sub" style="margin-top:4px">van max ${eur(o.limits.max_total)}</div></div>
   ${kpi("Open posities", b.open_posities, `${b.open_orders} orders in het boek`)}
   ${kpi("Trades", b.trades, b.winst_pct_trades == null ? "nog geen afgesloten" : `${nf(b.winst_pct_trades, 0)}% winstgevend`)}
-  ${live ? kpi("Saldo Bitvavo", eur(o.balance_eur), "vrij in euro") : kpi("Kopen-en-vasthouden", o.lab.buy_hold_pct == null ? "–" : pct(o.lab.buy_hold_pct, 1), "Lab-periode, ter vergelijking")}`);
-    this.put("r-chead", `<b>${esc(s.market || "–")}</b><span class="px">${price(sel.price)}</span><span style="font-size:13px;font-weight:600;color:${col(sel.change)}">${sel.change == null ? "" : pct(sel.change * 100) + " 24u"}</span><span class="sub">Signaal: <span style="color:#E7EAEE;font-weight:600">${esc(sel.signal || "–")}</span></span><div class="grow"></div>
+  ${live ? kpi("Saldo Bitvavo", eur(o.balance_eur), "vrij in euro") : kpi("Markt sinds start", o.markt_sinds_start_pct == null ? "–" : pct(o.markt_sinds_start_pct, 1), o.markt_sinds_start_pct != null && b.gem_in_markt ? `niets doen: ${eur((b.gem_in_markt * o.markt_sinds_start_pct) / 100, true)} op gem. ${eur(b.gem_in_markt)} in de markt` : "korf van alle markten, zonder handelen", col(o.markt_sinds_start_pct))}`);
+    this.put("r-chead", `<b>${esc(s.market || "–")}</b><span class="px">${price(sel.price)}</span><span style="font-size:13px;font-weight:600;color:${col(sel.change)}">${sel.change == null ? "" : pct(sel.change * 100) + " 24u"}</span><span class="sub">Signaal: <span style="color:#E7EAEE;font-weight:600">${esc(sel.signal || "–")}</span></span>${sel.spread_pct == null ? "" : `<span class="sub" title="Verschil tussen bied- en laatprijs">Spread: <span style="color:#E7EAEE">${nf(sel.spread_pct, 3)}%</span></span>`}<div class="grow"></div>
       <div class="tfs">${[["1h", "1u"], ["4h", "4u"], ["1d", "1d"]].map(([k, l]) => `<button class="${s.tf === k ? "on" : ""}" data-a="tf" data-v="${k}">${l}</button>`).join("")}</div>`);
     this.put("r-table", `<div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" class="${s.tab === k ? "on" : ""}" data-a="tab" data-v="${k}">${l}</button>`).join("")}</div><div class="scroll">${table}</div>`);
     this.put("r-eqhead", `<h2>Resultaat sinds start</h2><span class="sub">${live ? "live" : "paper"} · per uur · na kosten</span>`);
@@ -305,7 +322,9 @@ class BitvavoBotCard extends HTMLElement {
     <div class="row"><span>Plan</span><span style="font-weight:600;text-align:right">${plan ? esc(NAMES[plan.strategie] || plan.strategie) + " · " + esc(plan.tijdschaal) : "nog niet gekozen"}</span></div>
     <div class="row"><span>Lab-oordeel</span><span style="font-weight:600;color:${o.lab.oordeel === "kandidaat" ? UP : AMBER}">${esc(o.lab.oordeel)}</span></div>
     <div class="row"><span>Parameters ${esc(s.market || "")}</span><span>${plan ? esc(plan.params[s.market] || "geen (niet instappen)") : "–"}</span></div>
-    <div class="row"><span>Volgende herkeuze</span><span>${plan ? new Date(plan.herkeuze).toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" }) : "–"}</span></div>`);
+    <div class="row"><span>Volgende herkeuze</span><span>${plan ? new Date(plan.herkeuze).toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" }) : "–"}</span></div>
+    <div class="row"><span>Kosten maker / taker</span><span title="${o.fees ? "Opgehaald bij Bitvavo" : "Aanname: laagste tariefgroep"}">${o.fees ? nf(o.fees.maker * 100, 2) + "% / " + nf(o.fees.taker * 100, 2) + "%" : "0,15% / 0,25% (aanname)"}</span></div>
+    <div class="row"><span>Meldingen</span><span style="color:${o.notify ? UP : MUTED}">${o.notify ? "naar je telefoon" : "niet ingesteld"}</span></div>`);
     this.put("r-lim", `<h2>Risicogrenzen</h2>${LIMITS.map(([k, id, l]) => `<label class="lim">${l}<input type="number" inputmode="decimal" min="5" step="5" value="${o.limits[k]}" data-limit="${id}"></label>`).join("")}${o.limits.max_day_loss < 0.1 * o.limits.max_per_buy ? `<div class="sub2" style="color:${AMBER};line-height:1.5">Let op: het dagverlies (${eur(o.limits.max_day_loss)}) is kleiner dan 10% van één koop (${eur(o.limits.max_per_buy)}). Eén positie die 5–10% zakt zet dan al de dagstop aan.</div>` : ""}`, true);
     this.put("r-lock", `<div class="row"><h2>Live-slot</h2><span class="pill ${lockState[1]}">${lockState[0]}</span></div>${checks}${lockBtn}`);
     this.put("r-modal", this.modalHtml(), true);

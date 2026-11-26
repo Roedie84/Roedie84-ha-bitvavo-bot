@@ -26,12 +26,19 @@ class FakeExchange:
     def __init__(self, price=80000.0, eur=1000.0):
         self.price, self.eur, self.btc = price, eur, 0.0
         self.orders, self.calls = {}, []
+        self.coins = {}  # voor het volledige saldo-overzicht
         self.drop_next_post = False  # order komt aan, antwoord gaat verloren
         self.fee_in_base = False
 
     async def request(self, method, path, params=None, body=None):
         self.calls.append((method, path, params, body))
+        if path == "/account/fees":
+            return {"tier": "1", "volume": "150000", "taker": "0.002", "maker": "0.001"}
         if path == "/balance":
+            if not params:
+                return [{"symbol": "EUR", "available": str(self.eur), "inOrder": "0"}] + [
+                    {"symbol": sym, "available": str(v), "inOrder": "0"} for sym, v in self.coins.items()
+                ]
             sym = params["symbol"]
             return [{"symbol": sym, "available": str(self.eur if sym == "EUR" else self.btc), "inOrder": "0"}]
         if method == "POST":
@@ -216,3 +223,44 @@ async def test_exchange_rejection_is_recorded_not_raised():
     await e.on_bar("BTC-EUR", bars(3), "ema_cross", {}, Limits(), True, target=[0, 0, 1])
     assert e.book["positions"] == []
     assert "Insufficient balance" in e.book["last_error"]
+
+
+async def test_paper_market_orders_use_real_bid_ask_and_depth():
+    import time as _t
+
+    from custom_components.bitvavo_bot.brokers import DEPTH_PENALTY, PaperBroker
+    from custom_components.bitvavo_bot.strategies import Costs
+
+    prices, quotes = {"A-EUR": 100.0}, {}
+    b = PaperBroker(prices, Costs(), quotes=quotes)
+    plain = await b.market_buy("A-EUR", 100.25)
+    assert plain["amount"] == pytest.approx(100 / (100 * 1.0005))  # geen stand bekend: vaste slippage
+    quotes["A-EUR"] = {"bid": 99.8, "ask": 100.3, "bid_size": 50.0, "ask_size": 50.0, "t": _t.time()}
+    buy = await b.market_buy("A-EUR", 100.25)
+    assert buy["amount"] == pytest.approx(100 / 100.3)  # koopt tegen de laatprijs
+    sell = await b.market_sell("A-EUR", 1.0)
+    assert sell["quote"] == pytest.approx(99.8)  # verkoopt tegen de biedprijs
+    quotes["A-EUR"]["ask_size"] = 0.2  # te weinig aanbod tegen de beste prijs
+    thin = await b.market_buy("A-EUR", 100.25)
+    assert thin["amount"] == pytest.approx(100 / (100.3 * (1 + DEPTH_PENALTY)))
+    quotes["A-EUR"]["t"] = _t.time() - 600  # verouderde stand telt niet
+    old = await b.market_buy("A-EUR", 100.25)
+    assert old["amount"] == pytest.approx(plain["amount"])
+    b.set_costs(Costs(taker=0.002, maker=0.001))
+    cheap = await b.market_buy("A-EUR", 100.2)
+    assert cheap["fee"] == pytest.approx(0.2)
+
+
+async def test_holdings_fees_and_unsellable_dust_is_written_off():
+    ex = FakeExchange()
+    ex.coins = {"BTC": 0.5, "ETH": 2.0}
+    b = broker(ex)
+    assert await b.holdings() == {"EUR": 1000.0, "BTC": 0.5, "ETH": 2.0}
+    assert await b.fees() == {"taker": 0.002, "maker": 0.001, "tier": "1"}
+    e = Engine(new_book(0), b, "live")
+    e.book["positions"] = [{"id": "p1", "market": "BTC-EUR", "amount": 0.00001, "cost": 0.8, "entry_px": 80000.0, "entry_ts": 1, "entry_bar": 0, "level": None}]
+    ex.btc = 0.00001
+    await e._sell_market(e.book["positions"][0], "signaal")
+    assert e.book["positions"] == [] and e.book["last_error"] is None
+    assert e.book["trades"][-1]["reden"] == "restant te klein om te verkopen"
+    assert e.book["realized"] == pytest.approx(-0.8)

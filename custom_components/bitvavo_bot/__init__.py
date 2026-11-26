@@ -57,6 +57,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(async_track_time_change(hass, _hourly, minute=1, second=15))
     entry.async_on_unload(async_track_time_change(hass, _minute, second=40))
 
+    async def _summary(_now) -> None:
+        await manager.trader.async_daily_summary()
+
+    entry.async_on_unload(async_track_time_change(hass, _summary, hour=18, minute=0, second=0))
+
     # directe koersstroom: per seconde naar het scherm, elke 5 s paper-orders toetsen
     entry.async_create_background_task(hass, manager.trader.stream.run(), f"{DOMAIN}_stream")
 

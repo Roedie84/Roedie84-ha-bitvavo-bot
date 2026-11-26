@@ -26,6 +26,7 @@ class BitvavoStream:
         self._markets = markets
         self.prices = prices
         self.forming: dict[str, list[float]] = {}  # markt -> lopende uurcandle [ts, o, h, l, c, v]
+        self.quotes: dict[str, dict] = {}  # markt -> {bid, ask, bid_size, ask_size, t}
         self.extremes: dict[str, list[float]] = {}  # markt -> [laagste, hoogste] sinds de laatste reset
         self.connected = False
         self.last_msg = 0.0
@@ -55,8 +56,16 @@ class BitvavoStream:
         event = data.get("event")
         market = data.get("market")
         try:
-            if event == "ticker" and market and data.get("lastPrice") is not None:
-                self._price(market, float(data["lastPrice"]))
+            if event == "ticker" and market:
+                if data.get("bestBid") is not None and data.get("bestAsk") is not None:
+                    q = self.quotes.setdefault(market, {})
+                    q.update(bid=float(data["bestBid"]), ask=float(data["bestAsk"]), t=self.last_msg)
+                    if data.get("bestBidSize") is not None:
+                        q["bid_size"] = float(data["bestBidSize"])
+                    if data.get("bestAskSize") is not None:
+                        q["ask_size"] = float(data["bestAskSize"])
+                if data.get("lastPrice") is not None:
+                    self._price(market, float(data["lastPrice"]))
             elif event in ("candle", "candles") and market and data.get("interval") == "1h":
                 rows = data.get("candle") or []
                 if rows:

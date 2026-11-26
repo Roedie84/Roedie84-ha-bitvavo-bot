@@ -29,6 +29,11 @@ class BotEntity(Entity):
             entry_type=DeviceEntryType.SERVICE,
         )
 
+    @property
+    def available(self) -> bool:
+        # tot de opgeslagen stand is ingelezen is er niets zinnigs te tonen (geen valse nullen)
+        return self._m.ready
+
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
             async_dispatcher_connect(self.hass, f"{SIGNAL_UPDATE}_{self._m.entry.entry_id}", self._refresh)

@@ -289,7 +289,7 @@ class BitvavoBotCard extends HTMLElement {
   <button class="pill ${o.trading ? "ok" : "warn"}" data-a="trading" aria-label="Handel aan of uit">${o.trading ? "● Handel actief" : "❚❚ Handel gepauzeerd"}</button>
   ${livePill}${dataPill}${planPill}${b.dagstop ? `<span class="pill bad">Dagstop actief</span>` : ""}
   <div class="grow"></div><button class="stop" data-a="stop">Noodstop</button>`);
-    this.put("r-ban", `${s.error ? `<div class="banner bad">${esc(s.error)} <button class="pill" data-a="dismiss">Sluiten</button></div>` : ""}${b.laatste_fout ? `<div class="banner bad">Laatste fout: ${esc(b.laatste_fout)}</div>` : ""}${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt opgehaald en het Lab moet eerst draaien. Daarna kiest de bot zelf een strategie en start paper trading.</div>` : ""}`);
+    this.put("r-ban", `${s.error ? `<div class="banner bad">${esc(s.error)} <button class="pill" data-a="dismiss">Sluiten</button></div>` : ""}${b.laatste_fout ? `<div class="banner bad">Laatste fout: ${esc(b.laatste_fout)}</div>` : ""}${o.resume_error ? `<div class="banner bad">Live kon na de herstart niet worden hervat: ${esc(o.resume_error)}</div>` : ""}${!plan ? `<div class="banner">Er wordt nog niet gehandeld: de koersdata wordt opgehaald en het Lab moet eerst draaien. Daarna kiest de bot zelf een strategie en start paper trading.</div>` : ""}`);
     this.put("r-kpi", `${kpi(live ? "Resultaat live" : "Resultaat paper", eur(b.resultaat, true), `gerealiseerd ${eur(b.gerealiseerd, true)}`, col(b.resultaat))}
   ${kpi("Vandaag", eur(b.vandaag, true), `dagstop bij − ${eur(o.limits.max_day_loss)}`, col(b.vandaag))}
   <div class="card kpi"><div class="l">Ingezet</div><div class="v">${eur(b.ingezet)}</div><div class="bar"><i style="width:${used}%"></i></div><div class="sub" style="margin-top:4px">van max ${eur(o.limits.max_total)}</div></div>
@@ -306,7 +306,7 @@ class BitvavoBotCard extends HTMLElement {
     <div class="row"><span>Lab-oordeel</span><span style="font-weight:600;color:${o.lab.oordeel === "kandidaat" ? UP : AMBER}">${esc(o.lab.oordeel)}</span></div>
     <div class="row"><span>Parameters ${esc(s.market || "")}</span><span>${plan ? esc(plan.params[s.market] || "geen (niet instappen)") : "–"}</span></div>
     <div class="row"><span>Volgende herkeuze</span><span>${plan ? new Date(plan.herkeuze).toLocaleDateString("nl-NL", { day: "numeric", month: "short", year: "numeric" }) : "–"}</span></div>`);
-    this.put("r-lim", `<h2>Risicogrenzen</h2>${LIMITS.map(([k, id, l]) => `<label class="lim">${l}<input type="number" inputmode="decimal" min="5" step="5" value="${o.limits[k]}" data-limit="${id}"></label>`).join("")}`, true);
+    this.put("r-lim", `<h2>Risicogrenzen</h2>${LIMITS.map(([k, id, l]) => `<label class="lim">${l}<input type="number" inputmode="decimal" min="5" step="5" value="${o.limits[k]}" data-limit="${id}"></label>`).join("")}${o.limits.max_day_loss < 0.1 * o.limits.max_per_buy ? `<div class="sub2" style="color:${AMBER};line-height:1.5">Let op: het dagverlies (${eur(o.limits.max_day_loss)}) is kleiner dan 10% van één koop (${eur(o.limits.max_per_buy)}). Eén positie die 5–10% zakt zet dan al de dagstop aan.</div>` : ""}`, true);
     this.put("r-lock", `<div class="row"><h2>Live-slot</h2><span class="pill ${lockState[1]}">${lockState[0]}</span></div>${checks}${lockBtn}`);
     this.put("r-modal", this.modalHtml(), true);
     this.renderLegend();

@@ -17,7 +17,7 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 
 WS_URL = "wss://ws.bitvavo.com/v2/"
-FRESH_SECONDS = 30
+FRESH_SECONDS = 90  # in rustige uren komt er soms een halve minuut niets binnen
 
 
 class BitvavoStream:

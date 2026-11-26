@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -47,6 +47,10 @@ class Trader:
         self.stream = BitvavoStream(async_get_clientsession(hass), lambda: manager.markets, self.prices)
         self.paper = Engine(new_book(), PaperBroker(self.prices, extremes=self.stream.extremes), "paper")
         self._listeners: set = set()
+        # Eén slot voor alles wat orders of posities aanraakt: twee cycli tegelijk
+        # (uurcyclus, minuutcontrole, handmatige service) mogen nooit dubbel handelen.
+        self._lock = asyncio.Lock()
+        self.resume_error: str | None = None
         self._pushed = -1
         self.live_engine: Engine | None = None
         self._live_book: dict | None = None
@@ -73,6 +77,7 @@ class Trader:
                 await self._start_live()
             except HomeAssistantError as err:
                 _LOGGER.warning("Live niet hervat na herstart: %s", err)
+                self.resume_error = str(err)
 
     async def async_save(self) -> None:
         data = {
@@ -150,17 +155,22 @@ class Trader:
 
     async def async_pick_strategy(self) -> None:
         """Opnieuw kiezen uit het laatste Lab-rapport; open posities gaan eerst dicht."""
-        for e in self.engines():
-            await e.flatten()
-            e.book["last_bar"] = {}
-        self.plan = None
-        await self.async_ensure_plan(force=True)
+        async with self._lock:
+            for e in self.engines():
+                await e.flatten()
+                e.book["last_bar"] = {}
+            self.plan = None
+            await self.async_ensure_plan(force=True)
         self.m.notify()
 
     # ------------------------------------------------------------------ cycli
 
     async def async_on_data(self) -> None:
         """Na elke data-update: nieuw afgesloten bars verwerken."""
+        async with self._lock:
+            await self._on_data()
+
+    async def _on_data(self) -> None:
         await self.async_ensure_plan()
         plan = self.plan
         if not plan:
@@ -228,23 +238,27 @@ class Trader:
         if not self.stream.fresh:
             await self.async_poll_prices()  # terugval: de koersstroom ligt eruit
         now = int(time.time() * 1000)
-        for e in self.engines():
-            e.roll_day(now, self.prices, self.limits)
-            if e.book["orders"]:
-                await e.poll()
-        self.stream.reset_extremes()
-        await self._save_if_changed()
+        async with self._lock:
+            for e in self.engines():
+                e.roll_day(now, self.prices, self.limits)
+                if e.book["orders"]:
+                    await e.poll()
+            self.stream.reset_extremes()
+            await self._save_if_changed()
         self.m.notify()
 
     async def async_fast_tick(self) -> None:
         """Elke paar seconden: paper-limietorders toetsen aan de koersstroom."""
-        if not self.stream.fresh or not self.paper.book["orders"]:
+        if not self.stream.fresh or not self.paper.book["orders"] or self._lock.locked():
             return
-        before = self._signature()
-        await self.paper.poll()
-        self.stream.reset_extremes()
-        if self._signature() != before:
-            await self._save_if_changed()
+        async with self._lock:
+            before = self._signature()
+            await self.paper.poll()
+            self.stream.reset_extremes()
+            changed = self._signature() != before
+            if changed:
+                await self._save_if_changed()
+        if changed:
             self.m.notify()
 
     # ------------------------------------------------------- live naar het scherm
@@ -325,11 +339,13 @@ class Trader:
             raise HomeAssistantError(f"Live staat op slot. Nog niet voldaan: {missing}.")
         if not self.plan:
             raise HomeAssistantError("Er is nog geen strategie gekozen (het Lab heeft nog niet gedraaid).")
-        await self._start_live()
-        # nooit halverwege een beweging instappen: eerst de huidige bar markeren
-        if not self.live_engine.book["last_bar"]:
-            self.live_engine.book["last_bar"] = dict(self.paper.book["last_bar"])
-        await self.async_save()
+        async with self._lock:
+            await self._start_live()
+            # nooit halverwege een beweging instappen: eerst de huidige bar markeren
+            if not self.live_engine.book["last_bar"]:
+                self.live_engine.book["last_bar"] = dict(self.paper.book["last_bar"])
+            self.resume_error = None
+            await self.async_save()
         self.m.notify()
 
     async def async_override(self, phrase: str) -> None:
@@ -358,13 +374,14 @@ class Trader:
 
     async def async_emergency_stop(self) -> None:
         """Alles annuleren, alles verkopen, live uit, handel gepauzeerd."""
-        self.trading = False
-        for e in [self.paper] + ([self.live_engine] if self.live_engine else []):
-            await e.flatten()
-        self.live = False
-        if self.live_engine:
-            self._live_book = self.live_engine.book
-        await self.async_save()
+        self.trading = False  # direct, ook als er net een cyclus loopt
+        async with self._lock:
+            for e in [self.paper] + ([self.live_engine] if self.live_engine else []):
+                await e.flatten()
+            self.live = False
+            if self.live_engine:
+                self._live_book = self.live_engine.book
+            await self.async_save()
         self.m.notify()
 
     # ------------------------------------------------------------- voor het scherm
@@ -380,6 +397,7 @@ class Trader:
             "lock": lock,
             "limits": self.limits.__dict__,
             "balance_eur": self.balance_eur,
+            "resume_error": self.resume_error,
             "plan": plan
             and {
                 "strategie": plan["strategie"],

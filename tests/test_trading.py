@@ -266,3 +266,55 @@ async def test_live_push_to_screen_and_fast_paper_fills(hass: HomeAssistant, tmp
         await ws.send_json({"id": 6, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": "4h"})
         c = (await ws.receive_json())["result"]
         assert c["tf_ms"] == 4 * 3_600_000 and c["last_hour"] > 0
+
+
+async def test_cycles_never_overlap_and_admin_only_services(hass: HomeAssistant, tmp_path, hass_read_only_user):
+    import asyncio
+
+    from homeassistant.core import Context
+    from homeassistant.exceptions import Unauthorized
+
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        trader = entry.runtime_data.trader
+        running, peak = 0, 0
+
+        async def slow(*args, **kwargs):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+
+        with (
+            patch.object(trader.paper, "on_grid_bars", slow),
+            patch.object(trader.paper, "on_bar", slow),
+            patch.object(trader.paper, "poll", slow),
+        ):
+            trader.paper.book["orders"] = [{"id": "x", "market": "BTC-EUR", "side": "buy", "price": 1.0, "amount": 1.0}]
+            trader.stream.connected, trader.stream.last_msg = True, time.time()
+            await asyncio.gather(
+                trader.async_on_data(), trader.async_on_data(), trader.async_minute(),
+                trader.async_fast_tick(), trader.async_minute(),
+            )
+        assert peak == 1  # nooit twee tegelijk aan de orders
+
+        ctx = Context(user_id=hass_read_only_user.id)
+        for svc, data in (("override_lock", {"bevestiging": "IK ACCEPTEER HET RISICO"}), ("kies_strategie", {}), ("restore_lock", {})):
+            with pytest.raises(Unauthorized):
+                await hass.services.async_call(DOMAIN, svc, data, blocking=True, context=ctx)
+        assert trader.override is False
+
+
+async def test_entities_unavailable_until_state_is_loaded(hass: HomeAssistant, tmp_path):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        m = entry.runtime_data
+        assert m.ready and hass.states.get("sensor.bitvavo_bot_paper_resultaat").state != "unavailable"
+        m.ready = False
+        m.notify()
+        await hass.async_block_till_done()
+        for eid in ("sensor.bitvavo_bot_paper_resultaat", "switch.bitvavo_bot_live", "number.bitvavo_bot_max_totaal"):
+            assert hass.states.get(eid).state == "unavailable"

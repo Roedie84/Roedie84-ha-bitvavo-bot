@@ -57,6 +57,7 @@ class BitvavoBotManager:
         self.coverage: dict[str, dict] = {}
         self.report: dict | None = None
         self.lab_running = False
+        self.ready = False  # pas waar als de opgeslagen stand is ingelezen
         self._lock = asyncio.Lock()
         self.trader = Trader(hass, self)
 
@@ -89,6 +90,16 @@ class BitvavoBotManager:
         self.report = await self.hass.async_add_executor_job(self.store.load_report)
         await self.trader.async_load()
         await self._refresh_coverage()
+        self.ready = True
+        if self.trader.resume_error:
+            persistent_notification.async_create(
+                self.hass,
+                "Live handelen stond aan, maar kon na de herstart niet worden hervat: "
+                f"{self.trader.resume_error}\n\nOpen live-posities worden nu niet bewaakt. "
+                "Zet Live opnieuw aan of gebruik de noodstop.",
+                title="Bitvavo Bot – live niet hervat",
+                notification_id=f"{DOMAIN}_live_resume",
+            )
         self._notify()
         await self.async_update_data()
         stale = self.report is None or self.report.get("preregistratie") != PREREG

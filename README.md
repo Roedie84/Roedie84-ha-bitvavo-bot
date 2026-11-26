@@ -12,6 +12,7 @@ Lab en handelt daarna zelf: standaard **paper** (gesimuleerd op live koersen),
 | 0.4 | Preregistratie v2: 3 nieuwe strategieën (relatieve sterkte, trend met marktfilter, volatiliteitsuitbraak), 4 jaar historie, automatisch overstappen op een Lab-kandidaat |
 | 0.5 | Grafiek met muisfuncties: kruisdraad, uitlezing per candle, zoomen, slepen |
 | 0.6 | Directe koersstroom van Bitvavo: koersen per transactie, lopende candle in de grafiek, scherm ververst per seconde, paper-orders elke 5 s getoetst |
+| 0.6.1 | Controle: cycli kunnen niet meer overlappen (geen dubbele orders), geen valse nullen na herstart, slot en strategiewissel alleen voor beheerders, melding als live na herstart niet hervat |
 
 ## Hoe het werkt
 

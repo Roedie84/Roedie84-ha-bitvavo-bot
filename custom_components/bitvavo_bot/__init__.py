@@ -13,6 +13,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from datetime import timedelta
 
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 
 from .const import DOMAIN, SERVICE_RUN_LAB, SERVICE_UPDATE_DATA, VERSION
@@ -86,11 +87,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, SERVICE_UPDATE_DATA, _svc_update)
     hass.services.async_register(DOMAIN, SERVICE_RUN_LAB, _svc_lab)
-    hass.services.async_register(
-        DOMAIN, "override_lock", _svc_override, schema=vol.Schema({vol.Required("bevestiging"): str})
+    # alleen beheerders mogen het slot overbruggen of de strategie wisselen
+    async_register_admin_service(
+        hass, DOMAIN, "override_lock", _svc_override, schema=vol.Schema({vol.Required("bevestiging"): str})
     )
-    hass.services.async_register(DOMAIN, "restore_lock", _svc_restore)
-    hass.services.async_register(DOMAIN, "kies_strategie", _svc_pick)
+    async_register_admin_service(hass, DOMAIN, "restore_lock", _svc_restore)
+    async_register_admin_service(hass, DOMAIN, "kies_strategie", _svc_pick)
     return True
 
 

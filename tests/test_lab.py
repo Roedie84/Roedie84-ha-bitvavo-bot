@@ -87,9 +87,9 @@ def test_random_walk_finds_no_edge():
     """Op ruis zonder drift mag niets door de toets komen."""
     data = {f"M{i}-EUR": make_bars(24 * 500, seed=100 + i, vol=0.012) for i in range(4)}
     rep = run_lab(data)
-    assert rep["hypotheses"] == 21
-    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 21, abs=1e-5)
-    assert len(rep["resultaten"]) == 21 and rep["preregistratie"] == "v3"
+    assert rep["hypotheses"] == 25
+    assert rep["alpha_gecorrigeerd"] == pytest.approx(0.05 / 25, abs=1e-5)
+    assert len(rep["resultaten"]) == 25 and rep["preregistratie"] == "v4"
     assert rep["oordeel"] == "geen edge" and rep["kandidaten"] == []
 
 

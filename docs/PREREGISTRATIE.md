@@ -157,3 +157,38 @@ een aanname omdat Bitvavo de grens niet publiceert).
 ## Controle van de toets zelf
 24 universums zonder patroon (10 markten × 4 jaar; zijwaarts, stijgend,
 dalend): 0× een vals "kandidaat", bij gemiddeld 145–854 short-trades.
+
+---
+
+# Uitslag v3 (26-11-2026, 4 jaar data, 21 hypotheses)
+
+Kandidaat blijft **grid 1h**. Geen van de vier short-hypotheses haalde de
+drempel: donchian_short 4h −0,505% per trade (50 trades), ema_cross_short 4h
+−0,898% (93 trades); de 1d-varianten maakten 0 en 2 trades.
+
+# Preregistratie v4 – grid met bescherming, vastgelegd op 27-11-2026
+
+Aanleiding: de grid koopt dalingen zonder stop. In een langdurige crash blijft
+hij loten kopen tot zijn maximum. v4 toetst twee beschermde varianten. De
+parametersets zijn exact die van de gewone grid (stap 2/3/5% × 3/5 niveaus,
+gemiddelde over 50 bars, tijdstop na 200 bars). Bestaande lots lopen in alle
+varianten gewoon door (verkooplimiet of tijdstop); alleen nieuwe aankopen
+worden tegengehouden.
+
+| Strategie | Regel | Tijdschaal |
+|---|---|---|
+| grid_trend | Geen nieuwe kooporders zolang de dagslotkoers van BTC-EUR onder zijn 200-daags gemiddelde ligt | 1h, 4h |
+| grid_brake | Per markt: geen nieuwe kooporders zodra de slotkoers meer dan 2 stappen onder het laagste gridniveau sluit; weer aan zodra hij boven het laagste niveau sluit | 1h, 4h |
+
+- Totaal 25 hypotheses: drempel p < 0,05 / 25 = 0,002.
+- Overige eisen ongewijzigd.
+
+## Overstappen
+Na elke Lab-run kiest de bot de geslaagde, verhandelbare hypothese met het
+hoogste netto rendement per trade. Is dat een andere dan de huidige, dan gaan
+alle posities dicht, stapt de bot over, en begint de 28-dagentelling voor het
+live-slot opnieuw. Je krijgt daar een melding van.
+
+## Controle van de toets zelf
+24 universums zonder patroon (10 markten × 4 jaar; zijwaarts, stijgend,
+dalend): 0× een vals "kandidaat", bij gemiddeld 2.900–6.900 v4-trades.

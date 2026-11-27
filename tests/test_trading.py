@@ -147,7 +147,7 @@ async def test_state_survives_restart_and_screen_api(hass: HomeAssistant, tmp_pa
         assert [m["market"] for m in o["markets"]] == list(NAMES)
         assert all(m["price"] and m["change"] is not None for m in o["markets"])
         assert o["book"]["gerealiseerd"] == 3.21 and o["limits"]["max_total"] == 500
-        assert len(o["lab"]["resultaten"]) == 21 and o["plan"]["strategie"] == plan["strategie"]
+        assert len(o["lab"]["resultaten"]) == 25 and o["plan"]["strategie"] == plan["strategie"]
         await ws.send_json({"id": 2, "type": "bitvavo_bot/chart", "market": "BTC-EUR", "timeframe": plan["tijdschaal"]})
         c = (await ws.receive_json())["result"]
         assert 100 < len(c["bars"]) <= 600 and len(c["bars"][0]) == 6
@@ -191,7 +191,7 @@ async def test_upgrade_backfills_history_reruns_lab_and_keeps_old_verdict(hass: 
         for market in NAMES:
             cov = m.coverage[market]
             assert cov["candles"] >= 24 * 420 - 1  # oudere historie én de laatste uren bijgehaald
-        assert m.report["preregistratie"] == "v3" and len(m.report["resultaten"]) == 21
+        assert m.report["preregistratie"] == "v4" and len(m.report["resultaten"]) == 25
         old = json.loads((tmp_path / "bitvavo_bot" / "lab_report_v1.json").read_text())
         assert old["beste"] == "grid 1h"
         meta = json.loads((tmp_path / "bitvavo_bot" / "meta.json").read_text())
@@ -430,3 +430,41 @@ async def test_health_fees_notifications_reconcile_and_export(hass: HomeAssistan
         o = (await ws.receive_json())["result"]
         assert o["notify"] is True and o["fees"]["taker"] == 0.002 and "spread_pct" in o["markets"][0]
         assert "gem_in_markt" in o["book"] and o["lock"]["houdbaarheid"]["dagen"] == 365
+
+
+async def test_better_candidate_after_new_lab_run_takes_over(hass: HomeAssistant, tmp_path):
+    now = int(time.time() * 1000) // CANDLE_MS * CANDLE_MS
+    with fake_bitvavo(now):
+        entry = await _setup(hass, tmp_path)
+        m = entry.runtime_data
+        trader = m.trader
+        old = f"{trader.plan['strategie']} {trader.plan['tijdschaal']}"
+        rows = m.report["resultaten"]
+        mark = lambda key, ok, net: [r.update(geslaagd=ok, netto_pct=net) for r in rows if f"{r['strategie']} {r['tijdschaal']}" == key]
+        for r in rows:
+            r["geslaagd"] = False
+        # 1. huidige plan wordt kandidaat: geen wissel, run onthouden
+        mark(old, True, 1.0)
+        rows.sort(key=lambda r: (not r["geslaagd"], -r["netto_pct"]))
+        m.report = {**m.report, "kandidaten": [old], "gedraaid_op": "run-1"}
+        await trader.async_ensure_plan()
+        assert f"{trader.plan['strategie']} {trader.plan['tijdschaal']}" == old and trader.plan["lab_run"] == "run-1"
+        since = trader.plan["since"]
+        # 2. zelfde run, andere volgorde: niets gebeurt (alleen na een nieuwe run kijken)
+        await trader.async_ensure_plan()
+        assert trader.plan["since"] == since
+        # 3. nieuwe run met een betere grid-variant: overstappen, posities dicht, slot telt opnieuw
+        better = "grid_trend 1h" if old != "grid_trend 1h" else "grid_brake 1h"
+        mark(better, True, 2.5)
+        rows.sort(key=lambda r: (not r["geslaagd"], -r["netto_pct"]))
+        m.report = {**m.report, "kandidaten": [old, better], "gedraaid_op": "run-2"}
+        trader.paper.book["started"] -= 40 * 86_400_000
+        trader.plan["since"] -= 40 * 86_400_000
+        assert trader.lock_status()["paper_dagen"] >= 40
+        await trader.async_ensure_plan()
+        assert f"{trader.plan['strategie']} {trader.plan['tijdschaal']}" == better and trader.plan["bewezen"]
+        assert trader.paper.book["positions"] == [] and trader.paper.book["orders"] == []
+        assert trader.lock_status()["paper_dagen"] == 0
+        # 4. de nieuwe strategie draait: grid-familie handelt via de grid-motor
+        await trader.async_on_data()
+        assert set(trader.signals.values()) <= {"grid", "pauze", "geen"}

@@ -20,7 +20,7 @@ from .api import BitvavoError, BitvavoPrivateClient
 from .brokers import LiveBroker, PaperBroker
 from .engine import BrokerError, Engine, Limits, new_book
 from .lab import DAY_MS, TIMEFRAMES, Context, closed_bars, recent_performance, resample, select_params
-from .strategies import SHORT, Costs, compute_target, ema, param_specs, sma
+from .strategies import GRID_FAMILY, SHORT, STRATEGY_LABELS, Costs, brake_series, compute_target, ema, param_specs, sma
 from .stream import BitvavoStream
 
 _LOGGER = logging.getLogger(__name__)
@@ -139,16 +139,25 @@ class Trader:
         plan = self.plan
         # Short-hypotheses zijn alleen gesimuleerd: Bitvavo biedt margin niet via de API.
         tradable = [k for k in report.get("kandidaten", []) if k.split(" ")[0] not in SHORT]
-        # Een onbewezen plan maakt plaats zodra het Lab wél een (verhandelbare) kandidaat heeft.
-        if plan and not force and tradable:
-            if f"{plan['strategie']} {plan['tijdschaal']}" not in tradable:
-                for e in self.engines():
-                    await e.flatten()
-                    e.book["last_bar"] = {}
-                plan = None
+        rows = [r for r in report.get("resultaten", []) if r["strategie"] not in SHORT]
+        best = next((f"{r['strategie']} {r['tijdschaal']}" for r in rows if r.get("geslaagd")), None)
+        lab_run = report.get("gedraaid_op")
+        old_key = f"{plan['strategie']} {plan['tijdschaal']}" if plan else None
+        # Na elke nieuwe Lab-run: is er een betere verhandelbare kandidaat (hoogste netto per trade)?
+        # Een onbewezen plan maakt sowieso plaats voor een kandidaat.
+        if plan and not force and best and old_key != best and (old_key not in tradable or plan.get("lab_run") != lab_run):
+            for e in self.engines():
+                await e.flatten()
+                e.book["last_bar"] = {}
+            plan = None
+            new_name = STRATEGY_LABELS.get(best.split(" ")[0], best)
+            await self.async_notify(
+                "Bitvavo Bot – andere strategie",
+                f"Het Lab vond een betere strategie: {new_name} ({best.split(' ')[1]}). Alle posities zijn gesloten; "
+                f"de bot handelt nu volgens de nieuwe strategie. De 28 dagen paper voor het live-slot beginnen opnieuw.",
+            )
         if plan is None or force:
             pick = None
-            rows = [r for r in report.get("resultaten", []) if r["strategie"] not in SHORT]
             for row in rows:
                 if row.get("geslaagd"):
                     pick = row
@@ -159,7 +168,14 @@ class Trader:
                     pick = max(enough, key=lambda r: r.get("netto_pct", 0))
             if pick is None:
                 return
-            plan = {"strategie": pick["strategie"], "tijdschaal": pick["tijdschaal"], "params": {}, "selected_at": 0}
+            plan = {
+                "strategie": pick["strategie"],
+                "tijdschaal": pick["tijdschaal"],
+                "params": {},
+                "selected_at": 0,
+                "since": now,  # vanaf hier telt paper voor het live-slot
+            }
+        plan["lab_run"] = lab_run
         key = f"{plan['strategie']} {plan['tijdschaal']}"
         plan["bewezen"] = key in tradable
         if now - plan.get("selected_at", 0) >= RESELECT_DAYS * DAY_MS or plan.get("sel_v") != SELECTION_VERSION:
@@ -214,9 +230,16 @@ class Trader:
                 kwargs = specs.get(plan["params"].get(market) or "")
                 target = (
                     compute_target(strat, kwargs, market, bars, ctx, factor * 3_600_000)
-                    if kwargs and strat != "grid"
+                    if kwargs and strat not in GRID_FAMILY
                     else None
                 )
+                # grid met bescherming: geen nieuwe kooporders zolang de rem of het trendfilter het zegt
+                if kwargs and bars and strat == "grid_trend" and not ctx.regime_at(bars[-1][0] + factor * 3_600_000):
+                    kwargs = {**kwargs, "levels": 0, "pauze": "trendfilter"}
+                elif kwargs and bars and strat == "grid_brake" and brake_series(
+                    bars, kwargs["ref_n"], kwargs["step"], kwargs["levels"]
+                )[-1]:
+                    kwargs = {**kwargs, "levels": 0, "pauze": "noodrem"}
                 change = hour[-1][4] / hour[-25][4] - 1 if len(hour) > 25 else None
                 # koers bij de start van paper, voor de vergelijking met 'niets doen'
                 i = bisect_right(hour, self.paper.book["started"], key=lambda r: r[0]) - 1
@@ -232,14 +255,14 @@ class Trader:
                 self.changes[market] = change
             if kwargs is None:
                 self.signals[market] = "geen"
-            elif strat == "grid":
-                self.signals[market] = "grid"
+            elif strat in GRID_FAMILY:
+                self.signals[market] = "pauze" if kwargs.get("pauze") else "grid"
             else:
                 self.signals[market] = "long" if target and target[-1] else "vlak"
-            if strat != "grid":
+            if strat not in GRID_FAMILY:
                 for e in self.engines():
                     await e.on_bar(market, bars, strat, kwargs, self.limits, self.trading, target)
-        if strat == "grid":
+        if strat in GRID_FAMILY:
             items = [(m, bars, kwargs) for m, (bars, kwargs, _t, _c) in prepared.items()]
             for e in self.engines():
                 await e.on_grid_bars(items, self.limits, self.trading)
@@ -488,7 +511,8 @@ class Trader:
     # ------------------------------------------------------------- slot & live
 
     def lock_status(self) -> dict:
-        days = (time.time() * 1000 - self.paper.book["started"]) / DAY_MS
+        start = max(self.paper.book["started"], (self.plan or {}).get("since", 0))
+        days = (time.time() * 1000 - start) / DAY_MS
         checks = {
             "lab_kandidaat": bool(self.plan and self.plan.get("bewezen")),
             "paper_28_dagen": days >= LOCK_PAPER_DAYS,
@@ -684,7 +708,7 @@ class Trader:
                 lines = [(f"EMA {kw['fast']}", ema(closes, kw["fast"])), (f"EMA {kw['slow']}", ema(closes, kw["slow"]))]
             elif kw and plan["strategie"] == "rsi_dip":
                 lines = [(f"SMA {kw['trend_n']}", sma(closes, kw["trend_n"]))]
-            elif kw and plan["strategie"] == "grid":
+            elif kw and plan["strategie"] in GRID_FAMILY:
                 lines = [(f"SMA {kw['ref_n']}", sma(closes, kw["ref_n"]))]
             elif kw and plan["strategie"] in ("donchian", "donchian_regime"):
                 highs = [b[2] for b in bars]

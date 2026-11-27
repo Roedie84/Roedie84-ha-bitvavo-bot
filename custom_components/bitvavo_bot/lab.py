@@ -120,7 +120,7 @@ def closed_bars(hour_bars: Sequence[Bar], factor: int, base_ms: int = 3_600_000)
     return out
 
 
-PREREG = "v3"
+PREREG = "v4"
 REGIME_MARKET = "BTC-EUR"
 REGIME_DAYS = 200
 TOP_N = 3

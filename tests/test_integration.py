@@ -47,7 +47,7 @@ async def test_flow_setup_download_lab_and_unload(hass: HomeAssistant, tmp_path)
 
         verdict = hass.states.get("sensor.bitvavo_bot_lab_oordeel")
         assert verdict.state in ("geen edge", "kandidaat")
-        assert len(verdict.attributes["resultaten"]) == 21
+        assert len(verdict.attributes["resultaten"]) == 25
         assert (tmp_path / "bitvavo_bot" / "lab_report.json").exists()
         assert hass.states.get("sensor.bitvavo_bot_beste_netto_per_trade") is not None
 

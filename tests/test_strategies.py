@@ -9,6 +9,8 @@ from custom_components.bitvavo_bot.strategies import (
     run_strategy,
     target_vol_breakout,
     leverage_table,
+    brake_series,
+    run_strategy as _run,
     leveraged_return,
     Trade,
     rsi,
@@ -105,6 +107,7 @@ def test_param_specs_are_the_preregistered_ones():
         "donchian": 6, "ema_cross": 4, "rsi_dip": 6, "grid": 6,
         "rel_strength": 3, "donchian_regime": 6, "vol_breakout": 6,
         "donchian_short": 6, "ema_cross_short": 4,
+        "grid_trend": 6, "grid_brake": 6,
     }
     bars = make_bars(1500, seed=9, vol=0.015)
     ctx = Context({"BTC-EUR": bars, "X-EUR": bars})
@@ -166,3 +169,46 @@ def test_leverage_scales_result_costs_and_can_liquidate():
     assert rows[0]["gem_pct"] == pytest.approx(1.2) and rows[3]["slechtste_pct"] < -70
     assert rows[2]["max_terugval_pct"] > 80
     assert leverage_table([], c)[0]["trades"] == 0
+
+
+def test_grid_allow_blocks_new_lots_without_touching_open_ones():
+    flat_ = [(i * H, 100.0, 100.0, 100.0, 100.0, 1.0) for i in range(50)]
+    dip = (50 * H, 100.0, 100.0, 97.0, 97.5, 1.0)
+    up = (51 * H, 97.5, 100.5, 97.5, 100.0, 1.0)
+    bars = flat_ + [dip, up]
+    assert len(simulate_grid(bars, 50, 0.02, 1, 200, Costs())) == 1
+    assert simulate_grid(bars, 50, 0.02, 1, 200, Costs(), allow=lambda i: False) == []
+    # lot gekocht in bar 50, daarna alles geblokkeerd: verkoop gebeurt toch
+    sold = simulate_grid(bars, 50, 0.02, 1, 200, Costs(), allow=lambda i: i <= 50)
+    assert len(sold) == 1 and sold[0].exit_ts == 51 * H
+
+
+def test_brake_turns_on_deep_below_grid_and_off_on_recovery():
+    # ref ~100, stap 2%, 3 niveaus: laagste niveau 94, rem bij < 90, uit bij > 94
+    prices_ = [100.0] * 50 + [93.0, 89.0, 92.0, 95.0, 96.0]
+    bars = [(i * H, p, p, p, p, 1.0) for i, p in enumerate(prices_)]
+    b = brake_series(bars, 50, 0.02, 3)
+    assert b[49] is False and b[50] is False  # 93: onder het grid, maar niet diep genoeg
+    assert b[51] is True and b[52] is True  # 89 zet hem aan, 92 is nog geen herstel
+    assert b[53] is False  # 95 > laagste niveau (ref zakt mee, ~93,9)
+    assert brake_series(bars[:52], 50, 0.02, 3) == b[:52]  # geen vooruitkijken
+
+
+def test_grid_variants_run_and_trend_filter_respects_btc_regime():
+    from custom_components.bitvavo_bot.lab import Context
+
+    up = make_bars(24 * 400, seed=3, vol=0.012, drift=0.0004)
+    down = make_bars(24 * 400, seed=3, vol=0.012, drift=-0.0004)
+    kw = {"ref_n": 50, "step": 0.02, "levels": 3, "max_hold": 200}
+    plain = _run("grid", kw, "X-EUR", up, Context({"BTC-EUR": up}), H, Costs())
+    in_bull = _run("grid_trend", kw, "X-EUR", up, Context({"BTC-EUR": up}), H, Costs())
+    in_bear = _run("grid_trend", kw, "X-EUR", up, Context({"BTC-EUR": down}), H, Costs())
+    assert 0 < len(in_bull) <= len(plain)
+    # BTC 200 dagen in een daling: na de opbouwperiode geen nieuwe lots meer
+    assert all(t.entry_ts < up[0][0] + 200 * 24 * H for t in in_bear)
+    braked = _run("grid_brake", kw, "X-EUR", down, Context({}), H, Costs())
+    rem = brake_series(down, 50, 0.02, 3)
+    idx = {b[0]: i for i, b in enumerate(down)}
+    assert any(rem) and braked
+    # geen enkel lot gekocht in een bar waarvoor de rem (na de vorige bar) aan stond
+    assert all(not rem[idx[t.entry_ts] - 1] for t in braked)

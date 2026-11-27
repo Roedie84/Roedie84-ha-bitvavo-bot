@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
-from .strategies import Bar, live_target, sma
+from .strategies import GRID_FAMILY, Bar, live_target, sma
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -277,7 +277,7 @@ class Engine:
         if last_seen is not None and bar_ts <= last_seen:
             return
         try:
-            if strategy == "grid":
+            if strategy in GRID_FAMILY:
                 await self._grid_bar(market, bars, kwargs, limits, allow_buy)
             else:
                 await self._signal_bar(market, bars, strategy, kwargs, limits, allow_buy, last_seen, target)

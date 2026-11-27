@@ -285,7 +285,13 @@ def _net(entry_px: float, exit_px: float, fee_in: float, fee_out: float) -> floa
 
 
 def simulate_grid(
-    bars: Sequence[Bar], ref_n: int, step: float, levels: int, max_hold: int, costs: Costs
+    bars: Sequence[Bar],
+    ref_n: int,
+    step: float,
+    levels: int,
+    max_hold: int,
+    costs: Costs,
+    allow: Callable[[int], bool] | None = None,
 ) -> list[Trade]:
     """Grid rond een voortschrijdend gemiddelde.
 
@@ -321,8 +327,8 @@ def simulate_grid(
                 del open_lots[k]
                 sold.add(k)
         r = ref[i - 1]
-        if r is None:
-            continue
+        if r is None or (allow is not None and not allow(i)):
+            continue  # geen nieuwe kooporders in deze bar (bestaande lots lopen gewoon door)
         for k in range(1, levels + 1):
             if k in open_lots or k in sold:
                 continue  # een niveau wordt niet in dezelfde bar verkocht én opnieuw gekocht
@@ -335,6 +341,30 @@ def simulate_grid(
         done(lot, last[0], last[4], _net(lot[0], last[4] * (1 - costs.slippage), costs.maker, costs.taker))
     trades.sort(key=lambda t: t.entry_ts)
     return trades
+
+
+BRAKE_EXTRA_STEPS = 2  # noodrem: zoveel stappen onder het laagste gridniveau
+
+
+def brake_series(bars: Sequence[Bar], ref_n: int, step: float, levels: int) -> list[bool]:
+    """Noodrem per markt. b[j] = rem aan na het sluiten van bar j.
+
+    Aan zodra de slotkoers meer dan BRAKE_EXTRA_STEPS stappen onder het laagste
+    gridniveau zakt; uit zodra hij weer boven het laagste niveau sluit. Gebruikt
+    alleen data t/m bar j, dus de keuze voor bar j+1 kijkt niet vooruit."""
+    closes = [b[4] for b in bars]
+    ref = sma(closes, ref_n)
+    out: list[bool] = []
+    on = False
+    for j, c in enumerate(closes):
+        r = ref[j]
+        if r is not None:
+            if not on and c < r * (1 - (levels + BRAKE_EXTRA_STEPS) * step):
+                on = True
+            elif on and c > r * (1 - levels * step):
+                on = False
+        out.append(on)
+    return out
 
 
 def leveraged_return(t: Trade, leverage: float, costs: Costs, maintenance: float = 0.05, liq_fee: float = 0.02) -> tuple[float, bool]:
@@ -422,6 +452,17 @@ def param_specs() -> dict[str, dict[str, dict]]:
         "vol_breakout": {
             f"k{k} stop{m}": {"n": 20, "k": k, "m": float(m)} for k in (1.5, 2.0, 2.5) for m in (2, 3)
         },
+        # ---- preregistratie v4: grid met bescherming (zelfde parametersets als grid) ----
+        "grid_trend": {
+            f"stap{int(s * 1000) / 10}% x{lv}": {"ref_n": 50, "step": s, "levels": lv, "max_hold": 200}
+            for s in (0.02, 0.03, 0.05)
+            for lv in (3, 5)
+        },
+        "grid_brake": {
+            f"stap{int(s * 1000) / 10}% x{lv}": {"ref_n": 50, "step": s, "levels": lv, "max_hold": 200}
+            for s in (0.02, 0.03, 0.05)
+            for lv in (3, 5)
+        },
         # ---- preregistratie v3: short op margin (alleen gesimuleerd) ----
         "donchian_short": {
             f"in{e}/uit{x}": {"entry_n": e, "exit_n": x} for e in (20, 55, 100) for x in (10, 20)
@@ -443,7 +484,10 @@ HYPOTHESES: tuple[tuple[str, tuple[str, ...], bool, str], ...] = (
     ("vol_breakout", ("4h", "1d"), False, "v2"),
     ("donchian_short", ("4h", "1d"), False, "v3"),
     ("ema_cross_short", ("4h", "1d"), False, "v3"),
+    ("grid_trend", ("1h", "4h"), False, "v4"),
+    ("grid_brake", ("1h", "4h"), False, "v4"),
 )
+GRID_FAMILY = {"grid", "grid_trend", "grid_brake"}
 POOLED = {h[0] for h in HYPOTHESES if h[2]}
 SHORT = {"donchian_short", "ema_cross_short"}  # alleen te simuleren: Bitvavo biedt margin niet via de API
 
@@ -471,6 +515,11 @@ def run_strategy(
 ) -> list[Trade]:
     if strategy == "grid":
         trades = simulate_grid(bars, costs=costs, **kwargs)
+    elif strategy == "grid_trend":
+        trades = simulate_grid(bars, costs=costs, allow=lambda i: ctx.regime_at(bars[i][0]), **kwargs)
+    elif strategy == "grid_brake":
+        brake = brake_series(bars, kwargs["ref_n"], kwargs["step"], kwargs["levels"])
+        trades = simulate_grid(bars, costs=costs, allow=lambda i: not brake[i - 1], **kwargs)
     else:
         side = -1 if strategy in SHORT else 1
         trades = simulate_signals(bars, compute_target(strategy, kwargs, market, bars, ctx, tf_ms), costs, side)
@@ -487,6 +536,8 @@ STRATEGY_LABELS = {
     "ema_cross": "Trend – EMA-kruising",
     "rsi_dip": "Mean-reversion – RSI-dip",
     "grid": "Grid rond gemiddelde",
+    "grid_trend": "Grid met trendfilter (BTC > 200d)",
+    "grid_brake": "Grid met noodrem per markt",
     "rel_strength": "Relatieve sterkte (top 3, wekelijks)",
     "donchian_regime": "Trend – Donchian met marktfilter",
     "vol_breakout": "Volatiliteitsuitbraak",

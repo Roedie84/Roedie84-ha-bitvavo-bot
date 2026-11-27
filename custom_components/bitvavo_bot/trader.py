@@ -642,6 +642,8 @@ class Trader:
                     if self.prices.get(o["market"])
                     else None,
                     "bedrag": round(o["price"] * o["amount"], 2),
+                    "geplaatst": o.get("sinds") or o.get("placed"),
+                    "bijgesteld": o.get("placed"),
                 }
                 for o in active.book["orders"]
             ],

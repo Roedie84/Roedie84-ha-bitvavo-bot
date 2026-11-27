@@ -179,3 +179,26 @@ async def test_position_row_explains_itself():
     prices["A-EUR"] = 99.0
     (row,) = e.summary(prices)["posities"]
     assert row["koers_pct"] > 1.9 and row["resultaat"] > 0.3
+
+
+async def test_orders_remember_when_they_were_placed(monkeypatch):
+    clock = {"t": 1_000.0}
+    monkeypatch.setattr("custom_components.bitvavo_bot.engine.time.time", lambda: clock["t"])
+    e, prices = make({"A-EUR": 100.0})
+    await e.on_bar("A-EUR", flat(4), "grid", GRID, LIM, True)
+    first = {o["level"]: o for o in e.book["orders"]}
+    assert {o["sinds"] for o in first.values()} == {1_000_000} and {o["placed"] for o in first.values()} == {1_000_000}
+    clock["t"] = 4_600.0  # een uur later: kooporders worden bijgesteld
+    await e.on_bar("A-EUR", flat(5), "grid", GRID, LIM, True)
+    later = {o["level"]: o for o in e.book["orders"]}
+    assert set(later) == {1, 2}
+    assert all(o["sinds"] == 1_000_000 and o["placed"] == 4_600_000 for o in later.values())
+    clock["t"] = 5_000.0
+    prices["A-EUR"] = 97.5  # niveau 1 gevuld: verkooporder krijgt een eigen tijd
+    await e.poll()
+    (sell,) = [o for o in e.book["orders"] if o["side"] == "sell"]
+    assert sell["sinds"] == sell["placed"] == 5_000_000
+    clock["t"] = 8_600.0
+    await e.on_bar("A-EUR", flat(6), "grid", GRID, LIM, True)
+    (buy2,) = [o for o in e.book["orders"] if o["side"] == "buy"]
+    assert buy2["level"] == 2 and buy2["sinds"] == 1_000_000  # niveau 2 staat al sinds het begin

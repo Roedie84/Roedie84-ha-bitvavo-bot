@@ -21,6 +21,10 @@ from .strategies import Bar, live_target, sma
 _LOGGER = logging.getLogger(__name__)
 
 MAX_TRADES_KEPT = 5000
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 EXIT_COST = 0.003  # taker + slippage, voor de waardering van open posities
 
 
@@ -321,7 +325,13 @@ class Engine:
                 await self._cancel_orders(market, pos_id=pos["id"])
                 if any(p["id"] == pos["id"] for p in b["positions"]):
                     await self._sell_market(pos, "tijdstop")
-        # oude kooplimieten weg: de prijzen schuiven mee met het gemiddelde
+        # oude kooplimieten weg: de prijzen schuiven mee met het gemiddelde.
+        # Onthoud per niveau sinds wanneer er al een kooporder staat.
+        since = {
+            o.get("level"): o.get("sinds") or o.get("placed")
+            for o in b["orders"]
+            if o["market"] == market and o["side"] == "buy"
+        }
         await self._cancel_orders(market, side="buy", bar_ts=bar_ts)
         sold = set(b["sold_levels"].pop(market, []))
         if kwargs is None:
@@ -331,6 +341,7 @@ class Engine:
             return None
         return {
             "market": market,
+            "since": since,
             "kwargs": kwargs,
             "ref": ref,
             "sold": sold,
@@ -352,7 +363,18 @@ class Engine:
             return
         order = await self.broker.limit_buy(market, level_px, limits.max_per_buy)
         if order:
-            order.update({"market": market, "side": "buy", "level": k, "bar": ctx["bar_ts"], "step": kwargs["step"]})
+            now = _now_ms()
+            order.update(
+                {
+                    "market": market,
+                    "side": "buy",
+                    "level": k,
+                    "bar": ctx["bar_ts"],
+                    "step": kwargs["step"],
+                    "placed": now,  # laatste keer geplaatst/bijgesteld
+                    "sinds": (ctx.get("since") or {}).get(k) or now,  # sinds wanneer dit niveau een order heeft
+                }
+            )
             b["orders"].append(order)
 
     async def on_grid_bars(self, items, limits: Limits, allow_buy: bool) -> None:
@@ -400,7 +422,10 @@ class Engine:
             self._error(f"verkooplimiet {pos['market']}: {err}")
             return
         if order:
-            order.update({"market": pos["market"], "side": "sell", "pos_id": pos["id"], "level": pos["level"]})
+            now = _now_ms()
+            order.update(
+                {"market": pos["market"], "side": "sell", "pos_id": pos["id"], "level": pos["level"], "placed": now, "sinds": now}
+            )
             self.book["orders"].append(order)
 
     async def _cancel_orders(self, market=None, side=None, pos_id=None, bar_ts=None) -> None:
